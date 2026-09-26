@@ -1,10 +1,11 @@
 "use client";
 
-import { Maximize2 } from "lucide-react";
+import { useState } from "react";
+import { ImageOff, Maximize2 } from "lucide-react";
 import type { Item, Outfit } from "@/lib/types";
 import { categoryKey } from "@/lib/constants";
+import { mediaUrl } from "@/lib/api";
 import { cn, pct } from "@/lib/format";
-import { ItemImage } from "./ui";
 
 export function OutfitCard({
   outfit,
@@ -82,6 +83,8 @@ export function OutfitCard({
 }
 
 function Piece({ item, isNew, tall, small }: { item: Item; isNew?: boolean; tall?: boolean; small?: boolean }) {
+  const [err, setErr] = useState(false);
+  const url = mediaUrl(item.clean_image_url || item.image_url || item.cutout_url);
   return (
     <div
       className={cn(
@@ -90,7 +93,23 @@ function Piece({ item, isNew, tall, small }: { item: Item; isNew?: boolean; tall
         tall ? "aspect-[3/4]" : small ? "aspect-square" : "aspect-[4/3]",
       )}
     >
-      <ItemImage src={item.clean_image_url || item.image_url || item.cutout_url} className="absolute inset-0 bg-transparent" />
+      {/* Same image treatment as the zoom modal's BigPiece (absolutely filled, contain, multiply over the tile bg).
+          Don't pass "absolute" into ItemImage: its wrapper is "relative", cn() doesn't dedupe, and the wrapper
+          collapsed to 0px height, hiding the picture. */}
+      {url && !err ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={url}
+          alt=""
+          loading="lazy"
+          onError={() => setErr(true)}
+          className="absolute inset-0 size-full object-contain p-[8%] mix-blend-multiply"
+        />
+      ) : (
+        <div className="absolute inset-0 grid place-items-center">
+          <ImageOff className="size-6 text-black/20" />
+        </div>
+      )}
       {isNew && (
         <span className="absolute top-1.5 left-1.5 rounded-full bg-accent text-white text-[9px] font-bold tracking-wide px-1.5 py-0.5">
           NEW
