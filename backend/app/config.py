@@ -41,14 +41,13 @@ MAX_IMAGE_SIDE = int(os.environ.get("MAX_IMAGE_SIDE", "1600"))
 CROP_PAD_FRAC = float(os.environ.get("CROP_PAD_FRAC", "0.06"))
 
 # --- Default user settings (stored in the settings table, editable via API) --
+# Only these keys exist: stored keys from older versions (e.g. the retired outfit-count / cost-per-outfit limits)
+# are dropped on read and write. The verdict itself is a 0-100 score (app/verdict.py).
 DEFAULT_SETTINGS = {
     "compat_threshold": 0.5,  # "match strictness" 0..1; 0.5 == balanced per-size cutoff
     "redundancy_similar_threshold": 0.80,
     "redundancy_duplicate_threshold": 0.88,
     "redundancy_text_weight": 0.3,  # blend: (1-w)*image cosine + w*attribute-text cosine
-    "min_new_outfits": 3,
-    "max_cost_per_outfit": 10.0,
-    "monthly_budget": 200.0,
     "style_goal": "",
     "occasions": [],
     # extra (not in original contract, backwards compatible):

@@ -32,3 +32,5 @@ backend/server.pid
 .DS_Store
 server.pid
 compat_venv/
+backend/data/render_state.json
+backend/data/suggest_raw/

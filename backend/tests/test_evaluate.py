@@ -1,4 +1,5 @@
 """End-to-end tests of the evaluate flow against the seeded demo closet (no Gemini needed)."""
+import json
 from pathlib import Path
 
 import pytest
@@ -21,8 +22,13 @@ def check_shape(res):
     for k in ("item", "template_names", "redundancy", "outfits", "outfit_count_by_template", "total_new_outfits",
               "value", "verdict", "evaluation_id"):
         assert k in res
-    assert res["verdict"]["decision"] in ("BUY", "SKIP", "UNSUPPORTED")
-    assert 1 <= len(res["verdict"]["reasons"]) <= 4
+    assert res["verdict"]["decision"] in ("BUY", "CONSIDER", "SKIP", "UNSUPPORTED")
+    assert 1 <= len(res["verdict"]["reasons"]) <= 2
+    assert "budget" not in json.dumps(res).lower()
+    if res["verdict"]["decision"] != "UNSUPPORTED":
+        assert 0 <= res["verdict"]["score"] <= 100 and res["verdict"]["score"] == res["value"]["value_score"]
+        assert res["value"]["versatility"]["new_outfits"] == res["total_new_outfits"]
+        assert res["value"]["versatility"]["max_possible"] >= res["total_new_outfits"]
     assert res["total_new_outfits"] == sum(res["outfit_count_by_template"].values())
     for o in res["outfits"]:
         assert o["template"] in TEMPLATES and 0 <= o["score"] <= 1
@@ -70,8 +76,13 @@ def test_bottom_is_buy_with_shoes_layer(client, candidates):
     assert res["redundancy"]["level"] in ("none", "similar")
     assert res["template_names"] == ["top+bottom+shoes", "top+bottom+outerwear+shoes"]
     assert res["total_new_outfits"] >= 3
-    assert res["verdict"]["decision"] == "BUY"
-    assert res["value"]["cost_per_outfit"] == pytest.approx(45 / res["total_new_outfits"], abs=0.01)
+    assert res["verdict"]["decision"] == "BUY" and res["verdict"]["score"] >= 65
+    # cost per wear uses the SAME wears model as the sustainability card
+    assert res["value"]["expected_wears"] == pytest.approx(res["sustainability"]["expected_wears"], abs=0.1)
+    assert res["value"]["cost_per_wear"] == pytest.approx(45 / res["value"]["expected_wears"], abs=0.01)
+    assert res["value"]["cost_per_wear"] == pytest.approx(res["sustainability"]["cost_per_wear"], abs=0.01)
+    # a bottom can make (#tops) x (1 + #outerwear) looks with this closet (gender-filtered)
+    assert res["value"]["versatility"]["max_possible"] >= res["total_new_outfits"] >= 30
     # shoes are a completing layer: at most one outfit per (top, bottom[, outerwear]) base look
     bases = [tuple(sorted(i["id"] for i in o["items"] if i["category"] != "shoes")) for o in res["outfits"]]
     assert len(bases) == len(set(bases))
@@ -86,9 +97,16 @@ def test_mens_top_pairs_with_mens_only(client, candidates):
 
 
 def test_expensive_item_skips(client, candidates):
-    res = ev(client, candidates["bottom_womens"], price=900)
+    # the test closet has no prices, so the bar comes from the closet's price estimates (~$1.00/wear, not the
+    # $0.75 default): $1500 trousers are ~11x that -> cost floor -> SKIP despite being very versatile
+    res = ev(client, candidates["bottom_womens"], price=1500)
     assert res["verdict"]["decision"] == "SKIP"
-    assert res["value"]["cost_per_outfit"] > 10
+    assert res["value"]["price_source"] == "user"
+    assert res["value"]["price_bar_source"] == "closet_estimates"
+    assert res["value"]["cost_per_wear"] > 4 * res["value"]["price_bar"]
+    mid = ev(client, candidates["bottom_womens"], price=150)  # pricey but very versatile: not an automatic SKIP
+    assert mid["verdict"]["decision"] in ("BUY", "CONSIDER")
+    ev(client, candidates["bottom_womens"], price=45)
 
 
 def test_outerwear_templates(client, candidates):
@@ -102,6 +120,10 @@ def test_dress_templates(client, candidates):
     res = ev(client, candidates["dress_womens"])
     check_shape(res)
     assert res["template_names"] == ["dress+shoes", "dress+outerwear+shoes"]
+    n_outer = len(client.get("/api/closet/items", params={"category": "outerwear"}).json()["items"])
+    # a dress can only ever make 1 look + 1 per outerwear piece; judged against that, not a fixed outfit floor
+    assert res["value"]["versatility"]["max_possible"] <= 1 + n_outer
+    assert res["verdict"]["decision"] == "BUY"
 
 
 def test_shoes_supported(client, candidates):
@@ -155,25 +177,64 @@ def test_item_text():
 
 
 def test_settings_roundtrip(client):
-    s = client.put("/api/settings", json={"style_goal": "minimal capsule", "occasions": ["work", "date"]}).json()
+    s = client.put("/api/settings", json={"style_goal": "minimal capsule", "occasions": ["work", "date"],
+                                          "monthly_budget": 150, "min_new_outfits": 5}).json()  # retired: ignored
     assert s["style_goal"] == "minimal capsule" and s["occasions"] == ["work", "date"]
-    assert client.get("/api/settings").json()["min_new_outfits"] == 3
+    got = client.get("/api/settings").json()
+    for k in ("monthly_budget", "min_new_outfits", "max_cost_per_outfit"):
+        assert k not in got and k not in s
+    assert got["compat_threshold"] == 0.5
 
 
-def test_verdict_formula():
+def test_old_saved_settings_are_ignored(client):
+    from app import db
+    with db.get_conn() as c:  # a settings row written by an older version
+        old = json.loads(c.execute("SELECT data FROM settings WHERE id=1").fetchone()[0])
+        c.execute("UPDATE settings SET data=? WHERE id=1",
+                  (json.dumps({**old, "monthly_budget": 200.0, "min_new_outfits": 3, "max_cost_per_outfit": 10.0}),))
+    got = client.get("/api/settings").json()
+    assert not {"monthly_budget", "min_new_outfits", "max_cost_per_outfit"} & set(got)
+    client.put("/api/settings", json={"style_goal": ""})
+    with db.get_conn() as c:
+        assert "budget" not in c.execute("SELECT data FROM settings WHERE id=1").fetchone()[0]
+
+
+def test_old_buy_skip_evaluation_recomputed_on_read(client, candidates):
+    """Evaluations stored by formula v1 (BUY/SKIP + budget fields) render with the new verdict."""
+    from app import db
+    res = ev(client, candidates["dress_womens"], price=55)
+    eid = res["evaluation_id"]
+    with db.get_conn() as c:
+        row = json.loads(c.execute("SELECT results FROM evaluations WHERE id=?", (eid,)).fetchone()[0])
+        row["value"] = {"price": 55.0, "cost_per_outfit": 9.17, "weighted_outfits": 5.1, "value_score": 47,
+                        "redundancy_factor": 1.0, "budget_remaining": 200.0, "currency": "USD"}
+        row["verdict"] = {"decision": "SKIP", "reasons": ["Only creates 2 new outfits — you want at least 3"]}
+        row["settings"] = {**row["settings"], "monthly_budget": 200.0, "min_new_outfits": 3}
+        c.execute("UPDATE evaluations SET results=? WHERE id=?", (json.dumps(row), eid))
+    got = client.get(f"/api/evaluations/{eid}")
+    assert got.status_code == 200
+    g = got.json()
+    assert g["verdict"]["decision"] == res["verdict"]["decision"] and g["verdict"]["score"] == res["verdict"]["score"]
+    assert g["verdict"]["recomputed_on_read"] is True and g["verdict"]["original_decision"] == "SKIP"
+    assert "budget" not in json.dumps(g).lower() and "settings" not in g
+
+
+def test_max_possible_outfits():
     from app.config import DEFAULT_SETTINGS
-    from app.evaluate import compute_value_and_verdict
-    kw = dict(counts={"top+bottom": 4}, top_match=None, top_similarity=0.5, settings=DEFAULT_SETTINGS, spent=0)
-    v, d = compute_value_and_verdict(n_outfits=4, weighted_outfits=3.0, price=30.0, redundancy_level="none", **kw)
-    assert d["decision"] == "BUY" and v["cost_per_outfit"] == 7.5
-    assert v["value_score"] == 50  # r = 3*10/30 = 1 -> 100*1/(1+1)
-    _, d = compute_value_and_verdict(n_outfits=2, weighted_outfits=2.0, price=10.0, redundancy_level="none", **kw)
-    assert d["decision"] == "SKIP"  # too few outfits
-    v, d = compute_value_and_verdict(n_outfits=10, weighted_outfits=9.0, price=20.0,
-                                     redundancy_level="near_duplicate", **kw)
-    assert d["decision"] == "SKIP" and v["redundancy_factor"] == 0.2
-    _, d = compute_value_and_verdict(n_outfits=10, weighted_outfits=9.0, price=None, redundancy_level="similar", **kw)
-    assert d["decision"] == "BUY" and any("Add a price" in r for r in d["reasons"])
+    from app.evaluate import max_possible_outfits
+
+    def it(i, cat, g="womens"):
+        return {"id": f"i{i}", "category": cat, "attributes": {"gender_presentation": g}}
+    closet = ([it(i, "top") for i in range(4)] + [it(10 + i, "bottom") for i in range(3)]
+              + [it(20 + i, "outerwear") for i in range(2)] + [it(30, "dress"), it(31, "shoes"), it(40, "bottom", "mens")])
+    S = DEFAULT_SETTINGS
+    assert max_possible_outfits(it(99, "dress"), closet, S) == 1 + 2
+    assert max_possible_outfits(it(99, "top"), closet, S) == 3 * (1 + 2)       # mens bottom filtered out
+    assert max_possible_outfits(it(99, "bottom"), closet, S) == 4 * (1 + 2)
+    assert max_possible_outfits(it(99, "outerwear"), closet, S) == 4 * 3 + 1
+    assert max_possible_outfits(it(99, "shoes"), closet, S) == 4 * 3 + 1
+    assert max_possible_outfits(it(99, "top"), [], S) == 0
+    assert max_possible_outfits(it(99, "top"), closet, {**S, "match_gender_presentation": False}) == 4 * 3
 
 
 def test_detect_add_evaluate_delete(client):

@@ -117,6 +117,17 @@ const realApi = {
       }),
     ),
 
+  getItem: async (id: string) => itemOf(await request<unknown>(`/api/items/${encodeURIComponent(id)}`)),
+
+  /** (Re-)create an item's clean product image in the background; poll getItem until render_status != "pending". */
+  renderItem: async (id: string, mode: "auto" | "gemini" | "cleanup" = "auto") =>
+    itemOf(
+      await request<unknown>(`/api/items/${encodeURIComponent(id)}/render`, {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      }),
+    ),
+
   deleteItem: (id: string) =>
     request<{ ok: boolean }>(`/api/closet/items/${encodeURIComponent(id)}`, { method: "DELETE" }),
 

@@ -48,7 +48,8 @@ def ensure_fclip(item: dict) -> np.ndarray:
     """Get (or compute + store) the fashion-clip embedding of an item's white-background cutout."""
     v = db.get_embedding(item["id"], FCLIP_KIND, config.FASHION_CLIP_MODEL)
     if v is None:
-        v = embed_image_path(item["white_path"] or item["cutout_path"] or item["crop_path"])
+        from .render import embedding_image_path  # verified Gemini render if any, else the cutout on white
+        v = embed_image_path(embedding_image_path(item) or item["white_path"] or item["cutout_path"] or item["crop_path"])
         db.put_embedding(item["id"], FCLIP_KIND, config.FASHION_CLIP_MODEL, v)
     return v
 

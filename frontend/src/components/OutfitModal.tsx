@@ -230,7 +230,7 @@ export function OutfitModal({
 
 function BigPiece({ item, isNew }: { item: Item; isNew: boolean }) {
   const [err, setErr] = useState(false);
-  const url = mediaUrl(item.image_url || item.cutout_url);
+  const url = mediaUrl(item.clean_image_url || item.image_url || item.cutout_url);
   const a = item.attributes ?? {};
   const brand = a.brand ? String(a.brand) : "";
   const price = a.price != null && isNew ? money(Number(a.price), a.currency || "USD") : "";

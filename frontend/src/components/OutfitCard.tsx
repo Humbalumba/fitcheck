@@ -90,7 +90,7 @@ function Piece({ item, isNew, tall, small }: { item: Item; isNew?: boolean; tall
         tall ? "aspect-[3/4]" : small ? "aspect-square" : "aspect-[4/3]",
       )}
     >
-      <ItemImage src={item.image_url || item.cutout_url} className="absolute inset-0 bg-transparent" />
+      <ItemImage src={item.clean_image_url || item.image_url || item.cutout_url} className="absolute inset-0 bg-transparent" />
       {isNew && (
         <span className="absolute top-1.5 left-1.5 rounded-full bg-accent text-white text-[9px] font-bold tracking-wide px-1.5 py-0.5">
           NEW

@@ -63,7 +63,7 @@ GEMINI_API_KEY=... python scripts/test_gemini.py   # Stage 1+2 on data/test_imag
 | Vectors | `app/vectors.py` | fashion-clip image embeddings (white cutout, L2-norm) in FAISS `IndexIDMap(IndexFlatIP)` → `data/closet.faiss` (+ `closet.ids.npy`). Rebuilt from DB if stale. |
 | 3-4 Redundancy | `app/evaluate.py::redundancy` | same-category closet items, similarity = 0.7·image cosine (FAISS) + 0.3·text cosine (fashion-clip text embedding of "color pattern subcategory"). ≥0.88 near duplicate, ≥0.80 similar. |
 | 5 Outfits | `app/evaluate.py::generate_outfits`, `app/scoring.py` | Slot-by-slot greedy search scored by OutfitTransformer (`app/compat`), calibrated per outfit size, kept iff calibrated ≥ `compat_threshold`; shoes as optional last layer; raw scores cached in `compat_edges`. |
-| 6 Verdict | `app/evaluate.py::compute_value_and_verdict` | Pure math (below). |
+| 6 Verdict | `app/verdict.py::compute_verdict` (inputs gathered by `app/evaluate.py::verdict_for`) | Pure math (below): one 0-100 score → BUY / CONSIDER / SKIP. |
 
 ### Compatibility calibration (`app/scoring.py`)
 Raw OutfitTransformer scores depend on outfit size (Polyvore balanced cutoffs: 2 items 0.15, 3 items 0.35, 4+ 0.6 —
@@ -83,20 +83,50 @@ and the template name gets `+shoes`. N counts base looks + their outerwear varia
 the count. A shoes candidate counts a look only if it passes and beats every shoe you already own for that look.
 Gender: mens-only and womens-only items are never combined (`match_gender_presentation`).
 
-### Verdict formula (one function: `compute_value_and_verdict`)
+### Verdict formula (`app/verdict.py::compute_verdict`, pure math — no LLM)
+One 0-100 score → **BUY ≥ 65 · CONSIDER 45-64 · SKIP < 45**. Unit tests: `tests/test_verdict.py`.
 ```
-N = #outfits (each passed compat_threshold);  W = sum of their scores
-cost_per_outfit = price / max(N,1)
-r = W * max_cost_per_outfit / price            (no price: r = W / min_new_outfits)
-value_score = round(100 * redundancy_factor * budget_factor * r/(1+r))   # 50 == exactly at your $/outfit limit
-redundancy_factor: none 1.0 | similar 0.7 | near_duplicate 0.2;  budget_factor 0.5 if price > remaining monthly budget
-BUY iff N >= min_new_outfits AND not near_duplicate AND cost_per_outfit <= max_cost_per_outfit AND price <= remaining budget
+n  = #new outfits (each passed "match strictness");  M = max outfits this item's slot COULD make with this closet
+     (every base look the builder tries: top = #bottoms x (1 + #outerwear), bottom = #tops x (1 + #outerwear),
+      outerwear = min(#top-bottom pairs, 40) + #dresses, dress = 1 + #outerwear, shoes = #top-bottom pairs + #dresses)
+versatility    (40%) = 1/2 log(1+n)/log(1+M') + 1/2 min(1, log(1+n)/log(1+min(8, M')))       M' = max(M, 2)
+outfit quality (20%) = mean calibrated score of the best 5 outfits
+cost per wear  (40%) = clamp(0.6 + 0.3 log2(price_bar / cost_per_wear), -0.5, 1)
+    cost_per_wear = price / expected_wears   (expected_wears = app.sustainability.expected_wears: PEFCR base wears
+                    for the garment type x utility(n) [0.5x..2x, log] x 0.75 similar / 0.5 near-duplicate)
+    price         = user price > tag price > ESTIMATE (app/pricing.py; estimated cost weight x1 / x0.75 / x0.5 for
+                    high / medium / low confidence; the reason says "(est. price ~$60)")
+    price_bar     = "your usual cost per wear" = median of price / base_wears(type) over closet items with a real
+                    (user/tag) price when >= 3 have one ("closet_median"); else over real prices (counted twice) +
+                    the estimates of unpriced items ("closet_estimates"); $0.75/wear default only when neither exists
+score = weighted mean (weights renormalised if there's no price) + gap fill + similarity, clamped 0..100
+    gap fill:   +12 first of its category (first dress / outerwear), +6 first of its garment type, -6 if you own >= 5
+                of that type (counts only items it could be worn with, i.e. gender-compatible)
+    similarity: -5 if "similar" to something you own
+automatic SKIP (score capped at 44): near-duplicate, or no outfits although the closet has partners for it;
+nothing to pair it with at all yet: capped at 64 (never an outright BUY)
+reasons = the 2 factors that moved the score most (BUY: most positive, SKIP: most negative, CONSIDER: one of each)
 ```
-Remaining budget = `monthly_budget` − prices of items bought (add-to-closet) this calendar month.
+The evaluation returns `verdict.{decision, score, reasons (2), all_reasons, components, bands}` and
+`value.{cost_per_wear, expected_wears, price_bar, price_bar_source, versatility.{new_outfits, max_possible}}`.
+Evaluations saved by the old BUY/SKIP formula get the new verdict computed on read (`evaluate.with_current_verdict`).
+There is no monthly spending limit anywhere; old settings rows with retired keys are ignored.
+
+### Price estimates (`app/pricing.py`)
+- New items: the Gemini detection schema has `estimated_price_usd` + `price_confidence` (same call, no extra request);
+  `pricing.normalize_estimate` validates them (clamps $3..$5000, "high" only with a brand, table fallback if omitted).
+- Fallback detector (FashionCLIP zero-shot): per-garment-type median prices from `app/data/price_defaults.json`
+  (ROUGH US mid-market defaults, confidence "low").
+- Existing items: `pricing.backfill()` = ONE batched text-only Gemini call from the stored attributes for every item
+  with neither a price nor an estimate (closet first, <= 80 items), table fallback on any error (quota). Runs once in
+  a background thread at startup (`FITCHECK_PRICE_BACKFILL=0` to disable; tests disable it) and via
+  `scripts/backfill_price_estimates.py [--no-gemini] [--dry-run]`. Only the estimate keys are written.
+- An evaluation never calls Gemini for prices: an item without a stored estimate gets the table estimate on the fly.
 
 ## Shopping suggestions (`app/suggest.py`)
-After a verdict the UI calls `POST /api/evaluations/{id}/suggestions` (see API.md). SKIP → up to 3 better
-same-type alternatives; BUY → up to 3 pairings from other slots that are themselves BUYs with the future closet.
+After a verdict the UI calls `POST /api/evaluations/{id}/suggestions` (see API.md). SKIP or CONSIDER → up to 3 better
+same-type alternatives; BUY → up to 3 pairings from other slots that are themselves BUYs (score ≥ 65) with the future
+closet (never padded).
 * **One Gemini call per evaluation**, cached in the `suggestions` table. Primary: Google Search grounding
   (`types.Tool(google_search=...)`) on the failover chain. **Grounding needs a paid-tier key**; on this free key
   every model answers with a tier 429 — detected (no quota metric), remembered for 6 h, and it does *not* mark

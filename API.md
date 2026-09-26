@@ -44,6 +44,15 @@ Timestamps (`created_at`) are ISO-8601 UTC.
 Attributes are free-form JSON: the UI can PATCH any key. Extra keys may appear (`edited`, `purchased_at`,
 `purchase_price`, `price_source`, ...).
 
+**Price estimates.** Every item gets `estimated_price_usd` (typical new US retail for brand + type + material),
+`price_confidence` (`"high"` = brand clearly identified, `"medium"`, `"low"`) and `price_estimate_source`
+(`"gemini"` = read in the detection call itself, no extra request; `"gemini_text"` = one batched text-only backfill
+call for items saved before estimates existed; `"table"` = per-type defaults in `backend/app/data/price_defaults.json`
+when Gemini is unavailable). `price` is only ever a real price: `price_source` `"user"` (typed in; PATCHing `price`
+sets it), `"tag"` (read off a price tag) or `"seed"`. The estimate never overwrites `price`.
+Backfill: runs once in the background at startup (`FITCHECK_PRICE_BACKFILL=0` disables it) and via
+`backend/scripts/backfill_price_estimates.py`.
+
 ---
 
 ## GET /api/health
@@ -117,12 +126,34 @@ trousers candidate against the Polyvore demo closet):
   "outfits_truncated": false,
   "outfit_count_by_template": {"top+bottom+shoes": 7, "top+bottom+outerwear+shoes": 35},
   "total_new_outfits": 42,
-  "value": {"price": 45.0, "cost_per_outfit": 1.07, "weighted_outfits": 39.157, "value_score": 90,
-            "redundancy_factor": 1.0, "budget_remaining": 200.0, "currency": "USD"},
-  "verdict": {"decision": "BUY", "reasons": [
-      "Creates 42 new outfits with your wardrobe (7 top+bottom+shoes, 35 top+bottom+outerwear+shoes)",
-      "Nothing like it in your closet yet",
-      "$1.07 per new outfit (within your $10 limit)"]},
+  "value": {"price": 45.0, "currency": "USD",                // the price used: user > tag > estimate
+            "price_source": "user",                  // "user" | "tag" | "estimated" (no price given -> the estimate)
+            "price_confidence": null,                // estimates only: "high" | "medium" | "low"
+            "estimated_price": 60.0,                 // the item's estimate (present even when a user price won)
+            "cost_per_wear": 0.35, "expected_wears": 130.0,       // same wears model as sustainability
+            "price_bar": 1.5, "price_bar_source": "closet_estimates",
+            // "closet_median": >= 3 closet items with real (user/tag) prices; "closet_estimates": fewer, so real
+            // prices (counted twice) + estimates of the unpriced items; "default" ($0.75) only with neither
+            "priced_closet_items": 0, "estimated_closet_items": 40,
+            "versatility": {"new_outfits": 42, "max_possible": 56, "share": 0.75},
+            "outfit_quality": 0.999, "weighted_outfits": 38.993, "value_score": 96},   // value_score == verdict.score
+  "verdict": {
+    "decision": "BUY",                        // "BUY" | "CONSIDER" | "SKIP" | "UNSUPPORTED"
+    "score": 96,                              // 0-100: BUY >= 65, CONSIDER 45-64, SKIP < 45
+    "uncapped_score": 96, "capped_by": null,  // automatic SKIPs are capped at 44: "near_duplicate" | "no_outfits"
+    "reasons": ["Makes 42 of the 56 outfits a bottom can make with your closet",   // exactly the top 2
+                "About $0.35 per wear, below a typical $0.75"],
+    "all_reasons": ["...", "...", "Its best outfits are strong matches (1.00 average score)"],
+    "components": {                           // sub-scores 0-100 (cost may dip below 0 past 4x your bar)
+      "versatility":    {"score": 97, "weight": 0.4, "points": 38.8, "new_outfits": 42, "max_possible": 56},
+      "outfit_quality": {"score": 100, "weight": 0.2, "points": 20.0, "top_k": 5},
+      "cost":           {"score": 93, "weight": 0.4, "points": 37.2, "cost_per_wear": 0.35, "price_bar": 0.75,
+                         "price_bar_source": "default", "price_source": "user", "price_confidence": null},
+                         // estimated price: weight x1 / x0.75 / x0.5 for high / medium / low confidence, and the
+                         // reason reads "About $0.46 per wear (est. price ~$60), below your usual ~$1.50"
+      "gap_fill":       {"points": 0, "category_count": 8, "garment_type": "trousers", "type_count": 1},
+      "similarity":     {"points": 0, "level": "none", "top_similarity": 0.7981}},
+    "bands": {"BUY": 65, "CONSIDER": 45}, "formula_version": 2},
   "calibration": {"strictness": 0.5, "raw_cutoffs_by_size": {"2": 0.15, "3": 0.35, "4+": 0.6}},
   "scorer": "outfit_transformer",
   "supported": true,
@@ -139,6 +170,13 @@ trousers candidate against the Polyvore demo closet):
   "evaluation_id": "ev_1e046c19e631"
 }
 ```
+**Verdict.** Pure math in `app/verdict.py` (no LLM): versatility vs the most outfits that category could make with
+this closet (40%), quality of the best 5 outfits (20%), cost per wear vs your usual cost per wear (40%; median
+price ÷ typical wears of priced closet items, topped up with estimates while < 3 have real prices, $0.75 default only
+with no prices or estimates at all; with no price the item's estimate is used, labelled "est."), +12/+6 gap-fill bonus (first of its category / garment
+type), −6 if you already own ≥ 5 of that type, −5 if similar; near-duplicates are always SKIP. Full formula:
+`backend/README.md`.
+
 **Sustainability.** `app/sustainability.py::score_item(candidate attributes, category, total_new_outfits,
 redundancy.top_similarity, price)` with the redundancy thresholds from settings, computed after outfits and
 redundancy are known and saved with the evaluation. Footprint = typical garment weight × per-kg CO2e/water of the
@@ -152,6 +190,9 @@ outfits, $28) gets 44 D ("~3.2 kg CO2e over only ~39 expected wears").
 ## GET /api/evaluations/{evaluation_id}
 A saved evaluation, same shape as the `POST /api/evaluate` response (+ `created_at`). Evaluations saved before the
 sustainability score existed get `sustainability` computed on read (pure Python, using the stored settings snapshot).
+Evaluations saved by the old BUY/SKIP formula get `value` + `verdict` recomputed on read from the stored outfit
+count/scores, redundancy and price with the current closet (`verdict.recomputed_on_read: true`,
+`verdict.original_decision`).
 `404` if unknown.
 
 ## GET /api/items/{item_id}/sustainability
@@ -167,8 +208,9 @@ An outfit is kept iff `score >= settings.compat_threshold` (the "match strictnes
 `weighted_outfits` = sum of calibrated scores.
 
 A near-duplicate example (seeded black cami vs the closet's black tank top):
-`redundancy.level: "near_duplicate"`, `top_similarity: 0.898`, `verdict: {"decision": "SKIP", "reasons":
-["Pairs into 30 outfits, but they'd mostly repeat looks you already have", "Very similar to your black tank top (0.90 match)", "$0.93 per new outfit (within your $10 limit)"]}`.
+`redundancy.level: "near_duplicate"`, `top_similarity: 0.898`, `verdict: {"decision": "SKIP", "score": 44,
+"uncapped_score": 76, "capped_by": "near_duplicate", "reasons": ["Very similar to your black tank top (0.90 match)",
+"You already own 5 t-shirts and tops"], ...}`.
 
 **Templates** (`template_names` is always returned in this order; the frontend should group by it):
 
@@ -188,19 +230,19 @@ counts only if the new shoes pass AND score higher than every shoe you already o
 
 **Unsupported categories (accessory):** HTTP 200 with `"supported": false`, a friendly `"message"`,
 `outfits: []`, `total_new_outfits: 0`, `value.value_score: null` and
-`verdict: {"decision": "UNSUPPORTED", "reasons": [message]}`. Redundancy is still computed.
+`verdict: {"decision": "UNSUPPORTED", "score": null, "reasons": [message]}`. Redundancy is still computed.
 
 ## POST /api/evaluations/{evaluation_id}/suggestions[?refresh=true]
 Live-shopping picks for an evaluation, called by the UI **after** the verdict renders. Mode follows the verdict:
-* `SKIP` → `"mode": "alternatives"`, title "Better picks instead": real products of the **same type** in colors /
-  textures unlike the candidate and the closet. Must not be a near-duplicate of the closet, must not share the
-  candidate's color, and must beat the candidate on new outfits or value. Ranked BUY-verdict first, then outfits,
-  value, cost per outfit.
+* `SKIP` or `CONSIDER` → `"mode": "alternatives"`, title "Better picks instead": real products of the **same type**
+  in colors / textures unlike the candidate and the closet. Must not be a near-duplicate of the closet, must not share
+  the candidate's color, and must beat the candidate on new outfits or score. Ranked by their own verdict
+  (BUY > CONSIDER > SKIP), then score, then outfits.
 * `BUY` → `"mode": "pairings"`, title "Pairs well with this": real products in the **other slots**
   (top / bottom / outerwear / shoes / dress as relevant). Each one is scored against the *future* closet (closet + the
-  candidate); it must form outfits that include the candidate and get its own `BUY` from `compute_value_and_verdict`
-  (with the candidate's price counted as spent). Ranked by outfits with the candidate, then outfits, then value;
-  at most 2 per category.
+  candidate, which also counts toward the price bar and gap fill); it must form outfits that include the candidate
+  and get its own `BUY` (score ≥ 65) from the verdict formula. Ranked by outfits with the candidate, then outfits,
+  then score; at most 2 per category.
 * `UNSUPPORTED` → empty `suggestions` with a `message`.
 
 At most **3** suggestions; fewer if fewer qualify (never padded). Results are cached per evaluation in the
@@ -235,8 +277,8 @@ on CPU (Gemini ~4 s, search ~3 s, fetch ~9-14 s, pipeline ~10 s).
     "photo_url": "/media/suggest/sg_..._orig.jpg",   // the retailer's photo (local copy)
     "source_image_url": "https://cdn.shopify.com/...",
     "category": "outerwear", "subcategory": "jacket", "color": "navy", "color_source": "listing", "material": null,
-    "reason": "Unlocks 43 outfits, 7 with the white trousers, $1.58 per outfit",
-    "verdict": {"decision": "BUY", "reasons": ["..."]}, "value": { /* as in /api/evaluate */ },
+    "reason": "Unlocks 43 outfits, 7 with the white trousers, $0.52 per wear",
+    "verdict": {"decision": "BUY", "score": 88, "reasons": ["..."], ...}, "value": { /* as in /api/evaluate */ },
     "total_new_outfits": 43, "outfits_with_candidate": 7,
     "outfit_count_by_template": {"top+bottom+outerwear+shoes": 40, "dress+outerwear+shoes": 3}, "template_names": ["..."],
     "redundancy": {"level": "none", "top_similarity": 0.71, "closest": "black jacket"},
@@ -258,19 +300,18 @@ cached, the UI shows a friendly note + Retry); `500` otherwise.
 The cached result (same shape, `cached: true`) or `404` if none yet. Never calls Gemini.
 
 ## POST /api/candidate/{item_id}/add-to-closet
-"I bought it" → `Item` with `status: "closet"` (records `purchased_at` / `purchase_price`, which count against the monthly budget).
+"I bought it" → `Item` with `status: "closet"` (records `purchased_at` / `purchase_price`; closet prices feed the
+verdict's personal price bar).
 
 ## GET /api/settings  ·  PUT /api/settings
-PUT takes any subset; returns the full settings object.
+PUT takes any subset; returns the full settings object. Unknown / retired keys (e.g. the old outfit-count and
+cost-per-outfit limits) are ignored on write and dropped from stored settings on read.
 ```json
 {
   "compat_threshold": 0.5,                 // "match strictness" 0..1 on the CALIBRATED score (0.5 = balanced per-size cutoff)
   "redundancy_similar_threshold": 0.80,
   "redundancy_duplicate_threshold": 0.88,
   "redundancy_text_weight": 0.3,           // extra: similarity = 0.7*image cosine + 0.3*attribute-text cosine
-  "min_new_outfits": 3,
-  "max_cost_per_outfit": 10.0,
-  "monthly_budget": 200.0,                 // null = no budget cap
   "style_goal": "",
   "occasions": [],
   "match_gender_presentation": true,       // extra: don't pair mens-only with womens-only items

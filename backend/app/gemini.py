@@ -67,6 +67,12 @@ class Attributes(BaseModel):
     brand: Optional[str] = Field(default=None, description="only if a logo/label is clearly visible, else null")
     price: Optional[float] = Field(default=None, description="ONLY if a price tag is visible in the context photo, else null")
     currency: Optional[str] = Field(default=None, description="ISO code like USD if a price is visible, else null")
+    estimated_price_usd: Optional[float] = Field(
+        default=None, description="ALWAYS fill: typical NEW full retail price in USD for this brand + garment type + "
+                                  "material; if the brand is unknown, a typical US mid-market price for this type")
+    price_confidence: Optional[str] = Field(
+        default=None, description="confidence in estimated_price_usd: 'high' only when the brand is clearly "
+                                  "identified, 'medium', or 'low'")
     description: str = Field(description="one-line description of the item")
 
 
@@ -322,7 +328,9 @@ IDENTIFY_PROMPT = """You are a fashion cataloguing assistant. Image 1 is a cutou
 (detected as: "{label}"). Image 2 is the surrounding region of the original photo, for context only
 (use it to read price tags / brand labels; describe only the item in image 1).
 Return the item's attributes. Only fill price/currency if a price tag for this item is clearly readable
-in the photos; otherwise null. Only fill brand if clearly visible; otherwise null."""
+in the photos; otherwise null. Only fill brand if clearly visible; otherwise null.
+Always estimate estimated_price_usd (typical new US retail for this brand + type + material; mid-market for the type
+if the brand is unknown) and price_confidence (high only if the brand is clearly identified, else medium or low)."""
 
 
 def identify(cutout_white: Image.Image, context: Image.Image, label: str) -> dict:
@@ -332,6 +340,8 @@ def identify(cutout_white: Image.Image, context: Image.Image, label: str) -> dic
     d["formality"] = int(max(1, min(5, d.get("formality") or 2)))
     d["formality_label"] = FORMALITY_LABELS[d["formality"]]
     d["source"] = "gemini"
+    from .pricing import normalize_estimate
+    normalize_estimate(d, d.get("category"))  # validate the estimate; table fallback if the model omitted it
     return d
 
 
@@ -348,7 +358,9 @@ class DetectedItems(BaseModel):
 DETECT_DESCRIBE_PROMPT = DETECT_PROMPT + """
 For EACH detected item also return its catalogue attributes (category, subcategory, colors, pattern, fabric,
 formality 1-5, seasons, 3-6 style tags, gender presentation, brand only if a logo/label is clearly readable,
-price+currency ONLY if a price tag attached to that item is clearly readable, else null, one-line description).
+price+currency ONLY if a price tag attached to that item is clearly readable, else null, one-line description,
+estimated_price_usd = typical new US retail price for that brand + type + material (typical mid-market price for the
+type if the brand is unknown), price_confidence = high only if the brand is clearly identified, else medium or low).
 Jackets, blazers, coats, cardigans and vests are category "outerwear", never "top"."""
 
 
@@ -368,6 +380,8 @@ def detect_items(img: Image.Image) -> list[dict]:
         d["formality"] = int(max(1, min(5, d.get("formality") or 2)))
         d["formality_label"] = FORMALITY_LABELS[d["formality"]]
         d["source"] = "gemini"
+        from .pricing import normalize_estimate
+        normalize_estimate(d, d.get("category"))
         out.append({"box_2d": [y0, x0, y1, x1], "label": label, "attributes": d})
     return out
 

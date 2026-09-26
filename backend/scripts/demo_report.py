@@ -15,8 +15,9 @@ for c in sorted(db.list_items(status="candidate"), key=lambda c: c["attributes"]
     print(f"\n== {a.get('test_key')}: {a['description'][:50]} (${a.get('price')})  [{time.time()-t:.1f}s]")
     print(f"   redundancy={r['redundancy']['level']} top={r['redundancy']['top_similarity']} "
           f"-> {[m['item']['attributes']['description'][:30] for m in r['redundancy']['matches'][:1]]}")
-    print(f"   N={r['total_new_outfits']} {r['outfit_count_by_template']}  value={r['value'].get('value_score')} "
-          f"cpo={r['value'].get('cost_per_outfit')}  verdict={r['verdict']['decision']}")
+    print(f"   N={r['total_new_outfits']}/{(r['value'].get('versatility') or {}).get('max_possible')} "
+          f"{r['outfit_count_by_template']}  score={r['verdict'].get('score')} "
+          f"cpw={r['value'].get('cost_per_wear')}  verdict={r['verdict']['decision']}")
     for reason in r["verdict"]["reasons"]:
         print("     -", reason)
     for o in r["outfits"][:3]:

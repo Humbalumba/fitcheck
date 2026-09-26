@@ -31,6 +31,7 @@ for name in ("closet.faiss", "closet.ids.npy"):
 os.environ["FITCHECK_DATA_DIR"] = str(SRC)  # media paths of the seeded items live under SRC/media
 os.environ["FITCHECK_DB"] = str(_tmp / "fitcheck.db")
 os.environ["FITCHECK_FAISS"] = str(_tmp / "closet.faiss")
+os.environ.setdefault("FITCHECK_PRICE_BACKFILL", "0")  # no startup backfill thread racing the tests (tested directly)
 if os.environ.get("FITCHECK_TEST_GEMINI") != "1":
     os.environ["FITCHECK_GEMINI_OFF"] = "1"
 

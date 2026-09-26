@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Target, SlidersHorizontal, RotateCcw } from "lucide-react";
+import { Target, SlidersHorizontal, RotateCcw, Scale } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Settings } from "@/lib/types";
 import { OCCASION_SUGGESTIONS } from "@/lib/constants";
@@ -14,9 +14,6 @@ const DEFAULTS: Settings = {
   compat_threshold: 0.5,
   redundancy_similar_threshold: 0.82,
   redundancy_duplicate_threshold: 0.9,
-  min_new_outfits: 3,
-  max_cost_per_outfit: 10,
-  monthly_budget: null,
   style_goal: "",
   occasions: [],
 };
@@ -96,21 +93,6 @@ export default function SettingsPage() {
       <Card className="p-5 space-y-5">
         <SectionTitle icon={<Target className="size-4" />} title="Goals" />
         <div>
-          <Label>Monthly clothing budget</Label>
-          <div className="relative">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-black/40">$</span>
-            <input
-              type="number"
-              inputMode="decimal"
-              min={0}
-              value={s.monthly_budget ?? ""}
-              onChange={(e) => set("monthly_budget", e.target.value === "" ? null : Number(e.target.value))}
-              placeholder="e.g. 150"
-              className="w-full h-11 rounded-xl border border-black/10 bg-white pl-7 pr-3 text-[15px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
-            />
-          </div>
-        </div>
-        <div>
           <Label>Style goal</Label>
           <textarea
             value={s.style_goal ?? ""}
@@ -182,26 +164,6 @@ export default function SettingsPage() {
           onChange={(v) => set("redundancy_duplicate_threshold", v)}
           warn={dupInvalid ? "Should be higher than the similar threshold" : undefined}
         />
-        <SliderRow
-          label="Minimum new outfits"
-          help="Skip anything that unlocks fewer outfits than this."
-          value={s.min_new_outfits}
-          min={0}
-          max={20}
-          step={1}
-          fmt={(v) => String(v)}
-          onChange={(v) => set("min_new_outfits", v)}
-        />
-        <SliderRow
-          label="Max cost per outfit"
-          help="Price divided by new outfits must be under this."
-          value={s.max_cost_per_outfit}
-          min={1}
-          max={100}
-          step={1}
-          fmt={(v) => `$${v}`}
-          onChange={(v) => set("max_cost_per_outfit", v)}
-        />
         {"use_shoes_layer" in s && (
           <ToggleRow
             label="Include shoes in outfits"
@@ -218,6 +180,33 @@ export default function SettingsPage() {
             onChange={(v) => set("match_gender_presentation", v)}
           />
         )}
+      </Card>
+
+      <Card className="p-5 space-y-3" data-testid="verdict-explainer">
+        <SectionTitle icon={<Scale className="size-4" />} title="How the verdict works" />
+        <p className="text-sm text-black/60 leading-relaxed">
+          Every item gets one <b>0–100 score</b>: <b>BUY</b> at 65+, <b>CONSIDER</b> 45–64, <b>SKIP</b> below 45.
+          Near-duplicates of something you own are always a skip.
+        </p>
+        <ul className="text-sm text-black/60 space-y-1.5 list-disc pl-5">
+          <li>
+            <b>Versatility (40%)</b> — new outfits compared with the most that kind of item could make with your
+            closet (a dress can only make a few), with diminishing returns.
+          </li>
+          <li>
+            <b>Match quality (20%)</b> — how well its best outfits go together (uses the match strictness above).
+          </li>
+          <li>
+            <b>Cost per wear (40%)</b> — price ÷ expected wears, compared with your usual cost per wear (from prices of
+            clothes in your closet, topped up with estimated prices until at least 3 have real prices). No price
+            entered? We estimate it from the brand and type (marked &ldquo;est.&rdquo;), and a low-confidence estimate
+            counts for less.
+          </li>
+          <li>
+            <b>Gaps</b> — a bonus for your first dress, jacket, etc.; a small penalty if you already own lots of that
+            type.
+          </li>
+        </ul>
       </Card>
 
       <div className={cn("sticky bottom-20 z-10 transition", dirty ? "opacity-100" : "opacity-0 pointer-events-none")}>

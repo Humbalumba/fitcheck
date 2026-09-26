@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 from . import config, db, gemini
+from . import render as _render
 from .fallback import zero_shot_attributes
 from .scoring import COMPAT_KIND, ensure_compat_embeddings
 from .segment import guess_category_from_label, propose_boxes, segment_crop
@@ -27,11 +28,19 @@ _executor = ThreadPoolExecutor(max_workers=config.GEMINI_MAX_PARALLEL)
 
 def item_to_api(it: dict) -> dict:
     a = dict(it.get("attributes") or {})
+    original = config.media_url(it.get("white_path")) or config.media_url(it.get("crop_path"))
+    r = _render.api_fields(it)  # clean product image (app/render.py); never raises
     return {
         "id": it["id"],
         "status": it["status"],
         "category": it.get("category") or a.get("category"),
-        "image_url": config.media_url(it.get("white_path")) or config.media_url(it.get("crop_path")),
+        # display image: the clean render when ready, else the cutout on white
+        "image_url": r["clean_image_url"] or original,
+        "original_image_url": original,
+        "clean_image_url": r["clean_image_url"],
+        "clean_method": r["clean_method"],
+        "render_status": r["render_status"],
+        "render_checks": r["render_checks"],
         "cutout_url": config.media_url(it.get("cutout_path")) or config.media_url(it.get("white_path")),
         "crop_url": config.media_url(it.get("crop_path")),
         "bbox": it.get("bbox"),
@@ -152,6 +161,12 @@ def _merge_attrs(item: dict, partial: dict) -> dict:
             a["formality_label"] = gemini.FORMALITY_LABELS[a["formality"]]
         except Exception:
             pass
+    if "price" in (partial or {}):
+        # a price typed by the user always wins over tags and estimates (the estimate stays as a fallback)
+        if a.get("price") not in (None, ""):
+            a["price_source"] = "user"
+        else:
+            a.pop("price_source", None)
     if partial:
         a["edited"] = True
     return a
@@ -193,12 +208,14 @@ def add_to_closet(item_ids: list[str], overrides: dict | None = None, purchased:
         closet_index.add(it)
         ensure_compat_embeddings([it])
         out.append(it)
+    _render.schedule([i["id"] for i in out])  # clean product image in the background (never raises)
     return out
 
 
 def delete_item(item_id: str) -> None:
     closet_index.remove(item_id)
     it = db.get_item(item_id)
+    _render.forget(item_id)
     db.delete_item(item_id)
     if it and it.get("source") != "seed":
         for k in ("cutout_path", "white_path", "context_path"):

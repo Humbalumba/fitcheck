@@ -22,13 +22,16 @@ sentences), `footprint_kg_co2e`, `water_l` (+`water_complete`), `expected_wears`
 
 ## Formula
 
+The expected-wears part (`expected_wears()` in the same module) is shared with the BUY / CONSIDER / SKIP verdict, which
+uses it for **cost per wear** (see `backend/README.md`), so the verdict and this card always agree on wears.
+
 | step | formula | status |
 |---|---|---|
 | material mix | parse `material` / `fabric_guess` into shares: `95% cotton 5% elastane` becomes {cotton .95, elastane .05}. With no %, recognised fibres are split equally. `X blend` = 50% X + 50% average textile. `polycotton` = 50/50. Unlisted % goes to the average textile. Nothing recognised = average textile. If the material field is empty, fibre words in the description are used. | parsing rules = assumption |
 | footprint | `weight_kg(type) × Σ share_i × CO2e_per_kg_i`; **shoes:** a per-pair LCA value | **sourced** factors |
 | water | `weight_kg(type) × Σ share_i × L_per_kg_i` over materials that have a water factor (`water_complete=false` otherwise); shoes: not estimated | **sourced** factors |
 | base wears | PEFCR Apparel & Footwear default wears for the type (T-shirt 45 … coat 100) | **sourced** |
-| utility | `u(n) = min(2.0, 0.5 + 0.25·log2(1+n))` → 0.5× at 0 new outfits, 1.0× at 3 (the app's default `min_new_outfits`), +0.25 per doubling, capped at 2.0× (at about 63 outfits) | **assumption** (the 4× spread is bounded by EMF 2017: US clothes are worn about ¼ of the global average) |
+| utility | `u(n) = min(2.0, 0.5 + 0.25·log2(1+n))` → 0.5× at 0 new outfits, 1.0× at 3, +0.25 per doubling, capped at 2.0× (at about 63 outfits) | **assumption** (the 4× spread is bounded by EMF 2017: US clothes are worn about ¼ of the global average) |
 | redundancy | ×1.0 none, ×0.75 similar (≥ 0.80), ×0.5 near-duplicate (≥ 0.88): two interchangeable items split the same occasions | **assumption** (thresholds = the app's) |
 | expected wears | `base × u(n) × redundancy` | derived |
 | per wear | `footprint / expected_wears` (same for water) | derived |

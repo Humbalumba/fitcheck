@@ -3,8 +3,8 @@
     footprint_kg_co2e = weight_kg(garment type) x co2e_per_kg(material mix)      [shoes: per-pair LCA value]
     water_l           = weight_kg(garment type) x water_per_kg(material mix)     [shoes: not estimated]
     expected_wears    = base_wears(type) x utility(n_new_outfits) x redundancy_factor
-        utility(n)         = min(2.0, 0.5 + 0.25 * log2(1 + n))   0.5x at 0 outfits, 1.0x at 3 (the app's default
-                                                                   min_new_outfits), +0.25 per doubling, capped at 2.0x
+        utility(n)         = min(2.0, 0.5 + 0.25 * log2(1 + n))   0.5x at 0 outfits, 1.0x at 3, +0.25 per doubling,
+                                                                   capped at 2.0x
         redundancy_factor  = 1.0 none | 0.75 similar (>= 0.80) | 0.5 near duplicate (>= 0.88)
     per_wear_*        = footprint / expected_wears
     relative          = per_wear_co2e / per_wear_co2e of a *typical* item of the same type
@@ -17,6 +17,8 @@ app/data/sustainability_factors.json and docs/SUSTAINABILITY.md). Modelling assu
 the utility curve, the redundancy factors and the score scale. Everything returned is an estimate.
 
 Public API:  score_item(attributes, category, n_new_outfits, redundancy, price=None) -> dict
+             expected_wears(attributes, category, n_new_outfits, redundancy) -> dict | None
+                 the ONE wears model, shared with the BUY / CONSIDER / SKIP verdict (evaluate.py: cost per wear)
 """
 from __future__ import annotations
 
@@ -242,6 +244,32 @@ def redundancy_level(redundancy, dup_threshold: float = DUPLICATE_THRESHOLD,
     return "near_duplicate" if s >= dup_threshold else "similar" if s >= similar_threshold else "none"
 
 
+def expected_wears(attributes: dict | None, category: str | None, n_new_outfits: int | float | None,
+                   redundancy: float | str | None = None, *, dup_threshold: float = DUPLICATE_THRESHOLD,
+                   similar_threshold: float = SIMILAR_THRESHOLD) -> dict | None:
+    """The shared usage model: expected_wears = base_wears(garment type) x utility(new outfits) x redundancy factor.
+    Used by the sustainability estimate AND the verdict's cost per wear. None for unsupported categories."""
+    typ, type_how = resolve_garment_type(attributes, category)
+    if typ is None:
+        return None
+    gt = load_factors()["garment_types"][typ]
+    base = float(gt["base_wears"])
+    u = utility_multiplier(n_new_outfits)
+    level = redundancy_level(redundancy, dup_threshold, similar_threshold)
+    rf = REDUNDANCY_FACTOR.get(level, 1.0) if level else 1.0
+    return {"garment_type": typ, "type_resolved_from": type_how, "base_wears": base, "utility_multiplier": u,
+            "redundancy_level": level, "redundancy_multiplier": rf, "wears": base * u * rf,
+            "wears_source": gt["wears_source"]}
+
+
+def base_wears(attributes: dict | None, category: str | None) -> tuple[str, float] | None:
+    """(garment type, PEFCR default wears) for an item, or None if unsupported."""
+    typ, _ = resolve_garment_type(attributes, category)
+    if typ is None:
+        return None
+    return typ, float(load_factors()["garment_types"][typ]["base_wears"])
+
+
 def grade_for(score: int) -> tuple[str, str]:
     for lo, g, label in GRADES:
         if score >= lo:
@@ -288,9 +316,11 @@ def score_item(attributes: dict | None, category: str | None, n_new_outfits: int
     thresholds 0.88 / 0.80 by default) or an app level string ('none' | 'similar' | 'near_duplicate')."""
     F = load_factors()
     a = attributes or {}
-    typ, type_how = resolve_garment_type(a, category)
-    if typ is None:
-        return _unsupported(category or a.get("category"), type_how.replace("_", " "))
+    ew = expected_wears(a, category, n_new_outfits, redundancy, dup_threshold=dup_threshold,
+                        similar_threshold=similar_threshold)
+    if ew is None:
+        return _unsupported(category or a.get("category"), resolve_garment_type(a, category)[1].replace("_", " "))
+    typ, type_how = ew["garment_type"], ew["type_resolved_from"]
     gt = F["garment_types"][typ]
     avg = F["materials"]["unknown"]
     sources: list[str] = []
@@ -343,12 +373,9 @@ def score_item(attributes: dict | None, category: str | None, n_new_outfits: int
         use(avg["source"])
 
     # ---- usage
-    base = float(gt["base_wears"])
-    use(gt["wears_source"])
-    u = utility_multiplier(n_new_outfits)
-    level = redundancy_level(redundancy, dup_threshold, similar_threshold)
-    rf = REDUNDANCY_FACTOR.get(level, 1.0) if level else 1.0
-    wears = base * u * rf
+    base, u, level, rf, wears = (ew["base_wears"], ew["utility_multiplier"], ew["redundancy_level"],
+                                 ew["redundancy_multiplier"], ew["wears"])
+    use(ew["wears_source"])
     per_wear = footprint / wears
     per_wear_water = water / wears if water is not None else None
     reference_per_wear = reference_footprint / base

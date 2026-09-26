@@ -66,7 +66,8 @@ def zero_shot_attributes(white: Image.Image, label: str = "", img_vec: np.ndarra
     cat, formality, seasons = SUBCATS[sub]
     if cat == "dress":
         gender = "womens"
-    return {
+    from .pricing import table_estimate
+    out = {
         "category": cat, "subcategory": sub, "primary_color": color, "secondary_colors": [],
         "pattern": pattern, "fabric_guess": "unknown", "formality": formality,
         "formality_label": FORMALITY_LABELS[formality], "seasons": seasons, "style_tags": [],
@@ -74,3 +75,5 @@ def zero_shot_attributes(white: Image.Image, label: str = "", img_vec: np.ndarra
         "description": f"{color} {pattern + ' ' if pattern != 'solid' else ''}{sub}",
         "source": "fashion-clip-zero-shot",
     }
+    out.update(table_estimate(out, cat))  # deterministic per-type median price (app/data/price_defaults.json)
+    return out

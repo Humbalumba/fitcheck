@@ -4,7 +4,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import type { Attributes } from "@/lib/types";
 import { CATEGORIES, FORMALITY_LABELS, PATTERNS, SEASONS, categoryKey } from "@/lib/constants";
-import { cn, titleCase } from "@/lib/format";
+import { EST_PRICE_NOTE, cn, estMoney, titleCase } from "@/lib/format";
 import { ColorDot } from "./ui";
 
 const inputCls =
@@ -174,7 +174,15 @@ export function AttributeEditor({
         />
       </Field>
       {showPrice ? (
-        <Field label="Price">
+        <Field
+          label={
+            value.price == null && value.estimated_price_usd != null
+              ? `Price · ${estMoney(Number(value.estimated_price_usd))}`
+              : value.price != null && value.price_source === "tag"
+                ? "Price · from tag"
+                : "Price"
+          }
+        >
           <div className="relative">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/40">$</span>
             <input
@@ -184,7 +192,8 @@ export function AttributeEditor({
               min={0}
               step="0.01"
               value={value.price ?? ""}
-              placeholder="0.00"
+              placeholder={value.estimated_price_usd != null ? `~${Math.round(Number(value.estimated_price_usd))} (est.)` : "0.00"}
+              title={value.price == null && value.estimated_price_usd != null ? EST_PRICE_NOTE : undefined}
               onChange={(e) => set("price", e.target.value === "" ? null : Number(e.target.value))}
             />
           </div>

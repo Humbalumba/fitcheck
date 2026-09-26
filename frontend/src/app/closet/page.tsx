@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Plus, RefreshCw, Shirt, Trash2 } from "lucide-react";
+import { Plus, RefreshCw, Shirt, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Attributes, Item } from "@/lib/types";
 import { CATEGORIES, categoryKey, categoryLabel } from "@/lib/constants";
-import { money, titleCase } from "@/lib/format";
+import { estMoney, money, titleCase } from "@/lib/format";
 import { Button, Chip, EmptyState, ErrorBanner, ItemImage, PageTitle, Sheet, ColorDot } from "@/components/ui";
 import { AttributeEditor, diffAttributes } from "@/components/AttributeEditor";
 import { ItemSustainability } from "@/components/Sustainability";
@@ -34,6 +34,27 @@ export default function ClosetPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Clean product images render in the background after an item is added: poll while any is pending.
+  const anyPending = (items ?? []).some((it) => it.render_status === "pending");
+  useEffect(() => {
+    if (!anyPending) return;
+    const t = setInterval(async () => {
+      try {
+        const fresh = await api.listCloset();
+        setItems(fresh);
+        setOpen((o) => (o ? (fresh.find((x) => x.id === o.id) ?? o) : o));
+      } catch {
+        /* keep polling */
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [anyPending]);
+
+  const replaceItem = useCallback((u: Item) => {
+    setItems((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? null);
+    setOpen((o) => (o && o.id === u.id ? u : o));
+  }, []);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -130,6 +151,7 @@ export default function ClosetPage() {
           setItems((xs) => xs?.filter((x) => x.id !== id) ?? null);
           setOpen(null);
         }}
+        onChanged={replaceItem}
       />
     </div>
   );
@@ -139,7 +161,19 @@ function ItemTile({ item, onClick }: { item: Item; onClick: () => void }) {
   const a = item.attributes ?? {};
   return (
     <button onClick={onClick} className="group text-left rounded-3xl bg-white border border-black/5 overflow-hidden active:scale-[0.98] transition">
-      <ItemImage src={item.image_url || item.cutout_url} alt={a.description ?? ""} className="aspect-square" />
+      <div className="relative">
+        <ItemImage
+          src={item.clean_image_url || item.image_url || item.cutout_url}
+          alt={a.description ?? ""}
+          className="aspect-square"
+          pad={!item.clean_image_url}
+        />
+        {item.render_status === "pending" && (
+          <span className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-full bg-white/90 border border-black/5 px-2 py-0.5 text-[10px] font-semibold text-black/60">
+            <Sparkles className="size-3 animate-pulse" /> Polishing…
+          </span>
+        )}
+      </div>
       <div className="px-3 pb-3 pt-1">
         <div className="flex items-center gap-1.5 text-sm font-semibold leading-tight">
           <ColorDot color={a.primary_color} />
@@ -147,7 +181,11 @@ function ItemTile({ item, onClick }: { item: Item; onClick: () => void }) {
         </div>
         <div className="text-xs text-black/45 mt-0.5 truncate">
           {titleCase(a.primary_color ?? "")}
-          {a.price ? ` · ${money(a.price, a.currency ?? "USD")}` : ""}
+          {a.price
+            ? ` · ${money(a.price, a.currency ?? "USD")}`
+            : a.estimated_price_usd != null
+              ? ` · ${estMoney(Number(a.estimated_price_usd))}`
+              : ""}
         </div>
       </div>
     </button>
@@ -159,24 +197,31 @@ function ItemSheet({
   onClose,
   onSaved,
   onDeleted,
+  onChanged,
 }: {
   item: Item | null;
   onClose: () => void;
   onSaved: (i: Item) => void;
   onDeleted: (id: string) => void;
+  onChanged: (i: Item) => void;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState<Attributes>({});
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirm, setConfirm] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [rendering, setRendering] = useState(false);
 
+  // reset only when a different item opens (background polling refreshes the same item's image fields)
   useEffect(() => {
     if (item) {
       setDraft({ ...item.attributes, category: item.attributes?.category ?? item.category });
       setConfirm(false);
+      setShowOriginal(false);
     }
-  }, [item]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.id]);
 
   if (!item) return null;
   const changes = diffAttributes({ ...item.attributes, category: item.attributes?.category ?? item.category }, draft);
@@ -212,6 +257,31 @@ function ItemSheet({
     }
   };
 
+  const rerender = async () => {
+    setRendering(true);
+    try {
+      onChanged(await api.renderItem(item.id));
+      setShowOriginal(false);
+      toast("Re-rendering the product image…");
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setRendering(false);
+    }
+  };
+
+  const pending = item.render_status === "pending";
+  const originalSrc = item.crop_url || item.original_image_url || item.cutout_url;
+  const mainSrc = showOriginal ? originalSrc : item.clean_image_url || item.image_url || item.cutout_url;
+  const methodLabel =
+    item.clean_method === "gemini"
+      ? "AI product render · verified"
+      : item.clean_method === "cleanup"
+        ? "Auto-cleaned photo"
+        : item.render_status === "failed"
+          ? "Couldn't polish this photo"
+          : null;
+
   return (
     <Sheet
       open={!!item}
@@ -229,13 +299,48 @@ function ItemSheet({
         </div>
       }
     >
-      <div className="rounded-3xl border border-black/5 overflow-hidden mb-4">
-        <ItemImage src={item.image_url || item.cutout_url} className="aspect-[4/3]" />
+      <div className="relative rounded-3xl border border-black/5 overflow-hidden mb-2">
+        <ItemImage src={mainSrc} className="aspect-[4/3]" pad={showOriginal || !item.clean_image_url} />
+        {pending && (
+          <span className="absolute top-3 left-3 inline-flex items-center gap-1 rounded-full bg-white/90 border border-black/5 px-2.5 py-1 text-xs font-semibold text-black/60">
+            <Sparkles className="size-3.5 animate-pulse" /> Polishing product image…
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mb-4 text-xs">
+        <div className="inline-flex rounded-full bg-black/5 p-0.5" role="group" aria-label="Image view">
+          <button
+            onClick={() => setShowOriginal(false)}
+            className={`h-7 px-3 rounded-full font-semibold ${!showOriginal ? "bg-white shadow-sm" : "text-black/50"}`}
+          >
+            Clean
+          </button>
+          <button
+            onClick={() => setShowOriginal(true)}
+            className={`h-7 px-3 rounded-full font-semibold ${showOriginal ? "bg-white shadow-sm" : "text-black/50"}`}
+          >
+            View original
+          </button>
+        </div>
+        <span className="flex-1 truncate text-black/45">{pending ? "Rendering…" : methodLabel}</span>
+        <button
+          onClick={rerender}
+          disabled={rendering || pending}
+          className="inline-flex items-center gap-1 h-7 px-3 rounded-full border border-black/10 bg-white font-semibold disabled:opacity-40"
+        >
+          <Wand2 className={`size-3.5 ${rendering || pending ? "animate-pulse" : ""}`} /> Re-render
+        </button>
       </div>
       {item.attributes?.description && (
         <p className="text-sm text-black/60 mb-4">{String(item.attributes.description)}</p>
       )}
       <ItemSustainability key={item.id} itemId={item.id} />
+      {item.attributes?.price == null && item.attributes?.estimated_price_usd != null && (
+        <p className="text-xs text-black/50 mb-3" data-testid="closet-est-price">
+          Price <b>{estMoney(Number(item.attributes.estimated_price_usd))}</b>, estimated from brand and type. Enter the
+          real price below for more accurate verdicts.
+        </p>
+      )}
       <AttributeEditor value={draft} onChange={setDraft} />
     </Sheet>
   );

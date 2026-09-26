@@ -1,0 +1,172 @@
+{
+  "_doc": "ROUGH DEFAULTS, not market data. Typical new US mid-market retail prices (USD) per garment type, roughly Gap / J.Crew / Levi's / Madewell / Nike tier as of 2026. Used only when Gemini is unavailable (fallback detector, quota errors) so every item always has a price estimate. Rules are matched in order against the item's subcategory (then description); the first regex that matches wins. category_defaults are used when nothing matches.",
+  "version": 1,
+  "rules": [
+    [
+      "leather jacket|moto jacket|biker jacket",
+      220
+    ],
+    [
+      "puffer|down jacket|parka",
+      160
+    ],
+    [
+      "trench|overcoat|wool coat|peacoat|\\bcoat\\b",
+      180
+    ],
+    [
+      "blazer|suit jacket|sport coat",
+      130
+    ],
+    [
+      "denim jacket|jean jacket|trucker",
+      85
+    ],
+    [
+      "bomber|windbreaker|rain jacket|anorak|shacket|overshirt|\\bjacket\\b",
+      110
+    ],
+    [
+      "\\bvest\\b|gilet",
+      70
+    ],
+    [
+      "cardigan",
+      65
+    ],
+    [
+      "hoodie|hooded",
+      55
+    ],
+    [
+      "sweatshirt|crewneck",
+      50
+    ],
+    [
+      "sweater|jumper|pullover|knit",
+      65
+    ],
+    [
+      "polo",
+      45
+    ],
+    [
+      "tank|cami|crop top",
+      22
+    ],
+    [
+      "t-?shirt|\\btee\\b|long sleeve",
+      25
+    ],
+    [
+      "button.?down|button.?up|oxford shirt|flannel|dress shirt|\\bshirt\\b",
+      55
+    ],
+    [
+      "blouse",
+      50
+    ],
+    [
+      "leggings|yoga pants|tights",
+      45
+    ],
+    [
+      "track pants|joggers|sweatpants",
+      50
+    ],
+    [
+      "shorts",
+      40
+    ],
+    [
+      "skirt",
+      50
+    ],
+    [
+      "jeans|denim",
+      70
+    ],
+    [
+      "chinos|khakis|trousers|slacks|cargo|\\bpants\\b",
+      60
+    ],
+    [
+      "jumpsuit|romper|overalls",
+      85
+    ],
+    [
+      "maxi dress|gown",
+      95
+    ],
+    [
+      "dress",
+      75
+    ],
+    [
+      "boots|booties",
+      140
+    ],
+    [
+      "loafers|oxfords|brogues|derby",
+      100
+    ],
+    [
+      "heels|pumps|stilettos",
+      90
+    ],
+    [
+      "sandals|slides|flip.?flops",
+      45
+    ],
+    [
+      "sneakers|trainers|running shoes",
+      90
+    ],
+    [
+      "flats|mules|clogs",
+      70
+    ],
+    [
+      "handbag|purse|tote|backpack|crossbody|\\bbag\\b|clutch",
+      60
+    ],
+    [
+      "watch",
+      100
+    ],
+    [
+      "sunglasses",
+      30
+    ],
+    [
+      "belt",
+      35
+    ],
+    [
+      "\\btie\\b|bow tie",
+      35
+    ],
+    [
+      "\\bhat\\b|\\bcap\\b|beanie",
+      28
+    ],
+    [
+      "scarf",
+      30
+    ],
+    [
+      "necklace|earrings|bracelet|\\bring\\b|jewelry",
+      30
+    ]
+  ],
+  "category_defaults": {
+    "top": 35,
+    "bottom": 60,
+    "dress": 75,
+    "one_piece": 80,
+    "outerwear": 110,
+    "shoes": 90,
+    "accessory": 40,
+    "_other": 50
+  }
+}

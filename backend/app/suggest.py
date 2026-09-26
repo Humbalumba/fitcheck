@@ -9,14 +9,13 @@ Flow (one Gemini request per evaluation, cached in the `suggestions` table):
  3. Each product goes through the SAME pipeline as an uploaded item, with NO extra Gemini calls: the attributes
     Gemini returned become the item JSON, white-background product shots are cut out directly, other photos get a
     segformer cutout, fashion-clip embedding -> redundancy vs the closet, OutfitTransformer outfit generation
-    (evaluate.generate_outfits) and the verdict math (evaluate.compute_value_and_verdict). Products are stored as
+    (evaluate.generate_outfits) and the verdict math (verdict.compute_verdict via evaluate.verdict_for). Products are stored as
     items with status 'suggestion' (never in the closet listing or the FAISS index) so outfits can show them.
  4. Rank from real numbers and return at most 3 (fewer if fewer qualify):
-    SKIP: not a near-duplicate of the closet (or of the skipped item), beats the skipped item on outfits or value;
-          ranked BUY-verdict first, then #outfits, then value score.
-    BUY:  scored against the FUTURE closet (closet + the candidate, whose price counts against the budget);
-          only suggestions whose own verdict is BUY and that form outfits with the candidate; ranked by #outfits
-          with the candidate, then #outfits, then value score.
+    SKIP / CONSIDER: not a near-duplicate of the closet (or of the considered item), beats it on outfits or score;
+          ranked by own verdict (BUY > CONSIDER > SKIP), then score, then #outfits.
+    BUY:  scored against the FUTURE closet (closet + the candidate); only suggestions whose own verdict is BUY and
+          that form outfits with the candidate; ranked by #outfits with the candidate, then #outfits, then score.
 Fixture mode: FITCHECK_SUGGEST_FIXTURE_DIR=<dir> replays <dir>/<mode>.json instead of calling Gemini
 (every live response is also recorded to DATA_DIR/suggest_raw/<evaluation_id>.json).
 """
@@ -40,8 +39,8 @@ import numpy as np
 from PIL import Image
 
 from . import config, db, gemini
-from .evaluate import (SUPPORTED, compute_value_and_verdict, sustainability_for, generate_outfits, item_name, redundancy,
-                       redundancy_text, spent_this_month, text_embeddings)
+from .evaluate import (SUPPORTED, generate_outfits, item_name, redundancy, redundancy_text,
+                       sustainability_for, text_embeddings, verdict_for, with_current_verdict)
 from .pipeline import item_to_api, load_image
 from .segment import CATEGORY_CLASSES, _clean, guess_category_from_label, segment_crop, white_bg_cutout
 from .vectors import ensure_fclip
@@ -135,8 +134,10 @@ def build_prompt(cand: dict, mode: str, summary: dict, cand_eval: dict) -> str:
     if mode == "alternatives":
         owned = ", ".join((summary["categories"].get(cat) or {}).get("colors") or []) or "none"
         reasons = "; ".join((cand_eval.get("verdict") or {}).get("reasons") or [])
+        dec = ((cand_eval.get("verdict") or {}).get("decision") or "SKIP").upper()
         lines += [
-            f"Our wardrobe analysis says SKIP it: {reasons}.",
+            (f"Our wardrobe analysis says SKIP it: {reasons}." if dec == "SKIP" else
+             f"Our wardrobe analysis says it's only worth considering (not a clear buy): {reasons}."),
             f"TASK: find {ASK_N} alternative products of the SAME type ({_gender_words(g)} {a.get('subcategory') or cat}, "
             f"category {cat}) that would be better for this wardrobe: DIFFERENT colors, textures, materials or patterns "
             f"than the considered item ({a.get('primary_color')}, {a.get('fabric_guess') or 'unknown material'}) and than "
@@ -635,7 +636,9 @@ def similarity_to(a: dict, b: dict, settings: dict) -> float:
     return float((1 - w) * float(va @ vb) + w * float(T[0] @ T[1]))
 
 
-def score_suggestion(sug: dict, cand: dict, closet: list[dict], mode: str, settings: dict, spent: float) -> dict:
+def score_suggestion(sug: dict, cand: dict, closet: list[dict], mode: str, settings: dict) -> dict:
+    """Same pipeline + verdict as an uploaded item. Pairings are scored against the FUTURE closet (closet + the
+    candidate, which then also counts toward the price bar and gap fill)."""
     closet_by_id = {c["id"]: c for c in closet}
     red = redundancy(sug, closet_by_id, settings)
     top_item = red.pop("_top_item")
@@ -645,12 +648,10 @@ def score_suggestion(sug: dict, cand: dict, closet: list[dict], mode: str, setti
     for o in outfits:
         counts[o["template"]] += 1
     n = len(outfits)
-    w = float(sum(o["score"] for o in outfits))
     with_cand = sum(1 for o in outfits if cand["id"] in o["item_ids"])
     price = (sug.get("attributes") or {}).get("price")
-    value, verdict = compute_value_and_verdict(
-        n_outfits=n, weighted_outfits=w, counts=counts, price=price, redundancy_level=red["level"],
-        top_match=top_item, top_similarity=red["top_similarity"], settings=settings, spent=spent)
+    price = float(price) if price not in (None, "") else None
+    value, verdict = verdict_for(sug, pool, outfits, price, red, top_item, settings)
     sim_cand = similarity_to(sug, cand, settings) if sug.get("category") == cand.get("category") else None
     return {"outfits": outfits, "templates": templates, "counts": counts, "n": n, "with_candidate": with_cand,
             "redundancy": red, "top_match": top_item, "value": value, "verdict": verdict,
@@ -677,8 +678,8 @@ def _sus_score(s: dict) -> int:
 
 def _reason(mode: str, s: dict, cand: dict, cand_eval: dict) -> str:
     n = s["n"]
-    cpo = s["value"].get("cost_per_outfit")
-    cpo_txt = f"${cpo:.2f} per outfit" if cpo is not None else "no price"
+    cpw = s["value"].get("cost_per_wear")
+    cpo_txt = f"${cpw:.2f} per wear" if cpw is not None else "no price"
     cname = item_name(cand)
     if mode == "pairings":
         return f"Unlocks {n} outfit{'s' if n != 1 else ''}, {s['with_candidate']} with the {cname}, {cpo_txt}"
@@ -688,7 +689,7 @@ def _reason(mode: str, s: dict, cand: dict, cand_eval: dict) -> str:
     cn = cand_eval.get("total_new_outfits", 0)
     cv = (cand_eval.get("value") or {}).get("value_score")
     vs = s["value"].get("value_score")
-    cmp = (f"{n} outfits vs {cn}" if n > cn else f"value {vs} vs {cv}")
+    cmp = (f"{n} outfits vs {cn}" if n > cn else f"score {vs} vs {cv}")
     return f"Unlocks {n} outfit{'s' if n != 1 else ''}, {look}, {cpo_txt} ({cmp} for the {cname})"
 
 
@@ -709,23 +710,24 @@ def rank(mode: str, scored: list[tuple[dict, dict, dict]], cand: dict, cand_eval
             sc = s.get("similarity_to_candidate")
             ccol = ((cand.get("attributes") or {}).get("primary_color") or "").lower()
             if sc is not None and sc >= dup_t:
-                why = f"too similar to the item you're skipping ({sc:.2f})"
+                why = f"too similar to the item you're considering ({sc:.2f})"
             elif ccol and ((it.get("attributes") or {}).get("primary_color") or "").lower() == ccol:
-                why = f"same color ({ccol}) as the item you're skipping"
+                why = f"same color ({ccol}) as the item you're considering"
             elif not (s["n"] > cn or (s["value"].get("value_score") or 0) > cv):
-                why = f"doesn't beat the skipped item ({s['n']} outfits, value {s['value'].get('value_score')})"
+                why = f"doesn't beat the considered item ({s['n']} outfits, score {s['value'].get('value_score')})"
         else:
             if s["with_candidate"] == 0:
                 why = "no outfits together with the new item"
             elif s["verdict"]["decision"] != "BUY":
-                why = "its own verdict is SKIP (" + "; ".join(s["verdict"]["reasons"][:2]) + ")"
+                why = (f"its own verdict is {s['verdict']['decision']} ({s['verdict'].get('score')}/100: "
+                       + "; ".join(s["verdict"]["reasons"][:2]) + ")")
         if why:
             rejected.append({"name": p["name"], "retailer": p.get("retailer"), "reason": why})
         else:
             keep.append((p, it, s))
     if mode == "alternatives":
-        keep.sort(key=lambda x: (x[2]["verdict"]["decision"] == "BUY", x[2]["n"], x[2]["value"].get("value_score") or 0,
-                                 -(x[2]["value"].get("cost_per_outfit") or 1e9), _sus_score(x[2])), reverse=True)
+        keep.sort(key=lambda x: (DECISION_RANK.get(x[2]["verdict"]["decision"], 0), x[2]["value"].get("value_score") or 0,
+                                 x[2]["n"], _sus_score(x[2])), reverse=True)
         top = keep[:MAX_RETURNED]
     else:
         keep.sort(key=lambda x: (x[2]["with_candidate"], x[2]["n"], x[2]["value"].get("value_score") or 0,
@@ -780,8 +782,12 @@ def _suggestion_to_api(mode: str, p: dict, it: dict, s: dict, cand: dict, cand_e
 
 
 # ------------------------------------------------------------------ orchestration
+DECISION_RANK = {"BUY": 2, "CONSIDER": 1, "SKIP": 0}
+
+
 def mode_for(decision: str) -> str | None:
-    return {"SKIP": "alternatives", "BUY": "pairings"}.get((decision or "").upper())
+    """SKIP / CONSIDER -> better alternatives of the same type; BUY -> pairings."""
+    return {"SKIP": "alternatives", "CONSIDER": "alternatives", "BUY": "pairings"}.get((decision or "").upper())
 
 
 def _grounded_response(eid: str, mode: str, prompt: str) -> dict:
@@ -835,7 +841,7 @@ def compute(eid: str, fetcher=None) -> dict:
     ev = db.get_evaluation(eid)
     if ev is None:
         raise KeyError(eid)
-    res = ev["results"]
+    res = with_current_verdict(ev["results"])  # old BUY/SKIP rows: same verdict the page shows
     decision = (res.get("verdict") or {}).get("decision")
     mode = mode_for(decision)
     cand = db.get_item(ev["candidate_item_id"])
@@ -868,10 +874,6 @@ def compute(eid: str, fetcher=None) -> dict:
     fetched = (fetcher or fetch_products)(valid, grounded)
     t_fetch = time.time()
     delete_suggestion_items(eid)  # refresh: drop previous suggestion items of this evaluation
-    spent = spent_this_month()
-    cand_price = (res.get("value") or {}).get("price")
-    if mode == "pairings" and cand_price:
-        spent += float(cand_price)  # future closet: the candidate is bought
     scored = []
     for p in fetched:
         if p.get("fetch_error"):
@@ -879,7 +881,7 @@ def compute(eid: str, fetcher=None) -> dict:
             continue
         try:
             it = create_suggestion_item(p, p["_category"], cand, eid)
-            scored.append((p, it, score_suggestion(it, cand, closet, mode, settings, spent)))
+            scored.append((p, it, score_suggestion(it, cand, closet, mode, settings)))
         except Exception as e:  # one bad image must not sink the rest
             if not isinstance(e, ValueError):
                 log.exception("suggestion scoring failed for %s", p["name"])

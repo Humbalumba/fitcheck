@@ -11,6 +11,7 @@ import {
   Info,
   Layers,
   RotateCcw,
+  Scale,
   ShoppingBag,
   Sparkles,
   ThumbsDown,
@@ -21,7 +22,7 @@ import { api } from "@/lib/api";
 import { prepareImage } from "@/lib/image";
 import type { Attributes, DetectResponse, EvaluateResponse, Item } from "@/lib/types";
 import { categoryKey, categoryLabel, templateLabel } from "@/lib/constants";
-import { cn, money, pct, titleCase } from "@/lib/format";
+import { EST_PRICE_NOTE, cn, estMoney, money, pct, titleCase } from "@/lib/format";
 import { Button, Card, ErrorBanner, FormalityDots, ItemImage, PageTitle } from "@/components/ui";
 import { FilePicker } from "@/components/FilePicker";
 import { PhotoWithBoxes, boxColor } from "@/components/PhotoWithBoxes";
@@ -105,7 +106,8 @@ export default function BuyPage() {
   };
 
   const priceNum = price === "" ? NaN : Number(price);
-  const priceOk = Number.isFinite(priceNum) && priceNum >= 0;
+  // the price is optional: blank -> the backend estimates it from brand + type (the verdict labels it "est.")
+  const priceOk = price === "" || (Number.isFinite(priceNum) && priceNum >= 0);
 
   const evaluate = async () => {
     if (!selItem || !priceOk) return;
@@ -120,7 +122,7 @@ export default function BuyPage() {
           toast("Couldn't save attribute edits — evaluating with detected tags", "error");
         }
       }
-      const r = await api.evaluate(selItem.id, priceNum);
+      const r = await api.evaluate(selItem.id, price === "" ? null : priceNum);
       setResult(r);
       setStep("result");
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -128,6 +130,15 @@ export default function BuyPage() {
       setError((e as Error).message);
       setStep("select");
     }
+  };
+
+  /** Results page: enter / override the price and re-run the verdict (a user price always beats the estimate). */
+  const recheck = async (p: number) => {
+    const id = result?.item?.id ?? selected;
+    if (!id) return;
+    const r = await api.evaluate(id, p);
+    setResult(r);
+    setPrice(String(p));
   };
 
   const addToCloset = async () => {
@@ -154,6 +165,7 @@ export default function BuyPage() {
         added={added}
         onAgain={() => reset()}
         onBack={() => setStep("select")}
+        onRecheck={recheck}
       />
     );
   }
@@ -179,7 +191,7 @@ export default function BuyPage() {
               <h2 className="text-xl font-bold tracking-tight">Know before you buy</h2>
               <p className="text-sm text-black/60 mt-1 max-w-sm">
                 We&apos;ll count how many <b>new outfits</b> it unlocks with your closet, check if you already own
-                something like it, and work out the cost per outfit.
+                something like it, and work out the cost per wear.
               </p>
             </div>
           </Card>
@@ -283,7 +295,7 @@ export default function BuyPage() {
 
               <div className="mt-4">
                 <label className="block text-[11px] font-semibold uppercase tracking-wide text-black/45 mb-1">
-                  Price {selItem.attributes.price != null ? "· from tag" : "· required"}
+                  Price {selItem.attributes.price != null ? "· from tag" : "· optional"}
                 </label>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-lg text-black/40">$</span>
@@ -294,25 +306,35 @@ export default function BuyPage() {
                     step="0.01"
                     value={price}
                     onChange={(e) => setPrice(e.target.value)}
-                    placeholder="What does it cost?"
+                    placeholder={
+                      draft.estimated_price_usd != null
+                        ? `Optional · ${estMoney(Number(draft.estimated_price_usd))}`
+                        : "Optional · we'll estimate it"
+                    }
                     className={cn(
                       "w-full h-14 rounded-2xl border bg-white pl-9 pr-4 text-xl font-semibold outline-none focus:ring-2 focus:ring-accent/15",
                       !priceOk && price !== "" ? "border-rose-300" : "border-black/10 focus:border-accent",
                     )}
                   />
                 </div>
+                {price === "" && (
+                  <p className="text-[11px] text-black/45 mt-1.5 flex items-center gap-1" data-testid="price-optional-hint">
+                    <Info className="size-3.5 shrink-0" />
+                    Leave it blank and we&apos;ll estimate it from the brand and type.
+                  </p>
+                )}
               </div>
 
               <Button
                 size="lg"
                 variant="accent"
                 className="mt-4"
-                onClick={evaluate}
+                onClick={() => evaluate()}
                 loading={step === "evaluating"}
                 disabled={!priceOk}
               >
                 {!priceOk ? (
-                  "Enter a price to evaluate"
+                  "Enter a valid price"
                 ) : step === "evaluating" ? (
                   "Evaluating…"
                 ) : (
@@ -371,6 +393,7 @@ function ResultView({
   added,
   onAgain,
   onBack,
+  onRecheck,
 }: {
   r: EvaluateResponse;
   fallbackImage?: string;
@@ -379,16 +402,27 @@ function ResultView({
   added: boolean;
   onAgain: () => void;
   onBack: () => void;
+  onRecheck?: (price: number) => Promise<void>;
 }) {
   const decision = String(r.verdict?.decision ?? "").toUpperCase();
   const buy = decision === "BUY";
+  const consider = decision === "CONSIDER";
   const unsupported = decision === "UNSUPPORTED" || r.supported === false;
   const item = r.item;
   const a = item?.attributes ?? {};
   const currency = r.value?.currency || a.currency || "USD";
   const n = r.total_new_outfits ?? r.outfits?.length ?? 0;
-  const vs = r.value?.value_score;
-  const vsPct = vs == null ? null : Number(vs); // 0-100
+  const score = r.verdict?.score ?? r.value?.value_score ?? null; // 0-100
+  const maxPossible = r.value?.versatility?.max_possible ?? null;
+  const cpw = r.value?.cost_per_wear ?? null;
+  const bar = r.value?.price_bar ?? null;
+  const barSource = r.value?.price_bar_source;
+  const personalBar = barSource === "closet_median" || barSource === "closet_estimates";
+  const barApprox = barSource === "closet_estimates" ? "~" : "";
+  const estimated = r.value?.price_source === "estimated";
+  const priceText =
+    r.value?.price == null ? "" : estimated ? estMoney(r.value.price, currency) : money(r.value.price, currency);
+  const catNoun = CATEGORY_NOUN[categoryKey(item?.category) ?? ""] ?? "item";
 
   const groups = useMemo(() => {
     const m = new Map<string, typeof r.outfits>();
@@ -429,31 +463,55 @@ function ResultView({
             ? "bg-gradient-to-br from-zinc-600 to-zinc-800"
             : buy
               ? "bg-gradient-to-br from-emerald-500 to-teal-600"
-              : "bg-gradient-to-br from-rose-500 to-orange-500",
+              : consider
+                ? "bg-gradient-to-br from-amber-400 to-amber-600"
+                : "bg-gradient-to-br from-rose-500 to-red-600",
         )}
+        data-testid="verdict-card"
+        data-decision={decision}
       >
         <div className="absolute -right-8 -top-8 size-40 rounded-full bg-white/10" />
         <div className="flex items-start gap-4 relative">
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <div className="inline-flex items-center gap-1.5 rounded-full bg-white/20 px-2.5 py-1 text-xs font-semibold">
-              {unsupported ? <Info className="size-3.5" /> : buy ? <ThumbsUp className="size-3.5" /> : <ThumbsDown className="size-3.5" />}
+              {unsupported ? (
+                <Info className="size-3.5" />
+              ) : buy ? (
+                <ThumbsUp className="size-3.5" />
+              ) : consider ? (
+                <Scale className="size-3.5" />
+              ) : (
+                <ThumbsDown className="size-3.5" />
+              )}
               {unsupported ? "Heads up" : "Our verdict"}
             </div>
-            <div className={cn("font-black tracking-tight mt-2 leading-none", unsupported ? "text-3xl" : "text-6xl")}>
-              {unsupported ? "Can't score outfits" : buy ? "BUY" : "SKIP"}
+            <div
+              className={cn(
+                "font-black tracking-tight mt-2 leading-none",
+                unsupported ? "text-3xl" : consider ? "text-4xl sm:text-6xl" : "text-6xl",
+              )}
+            >
+              {unsupported ? "Can't score outfits" : buy ? "BUY" : consider ? "CONSIDER" : "SKIP"}
             </div>
+            {!unsupported && score != null && (
+              <div className="mt-2 leading-none" aria-label={`Score ${score} out of 100`} data-testid="verdict-score">
+                <span className="text-3xl font-black tabular-nums">{score}</span>
+                <span className="text-sm font-semibold text-white/75">/100</span>
+              </div>
+            )}
             <div className="text-sm text-white/85 mt-2 font-medium">
               {titleCase([a.primary_color, a.subcategory || a.category].filter(Boolean).join(" "))}
-              {r.value?.price != null ? ` · ${money(r.value.price, currency)}` : ""}
+              {priceText ? ` · ${priceText}` : ""}
             </div>
           </div>
           <div className="size-28 rounded-3xl bg-white shadow-lg overflow-hidden shrink-0 rotate-3">
             <ItemImage src={item?.image_url || item?.cutout_url || fallbackImage} className="size-full" />
           </div>
         </div>
+        {!unsupported && score != null && <ScoreBar score={score} bands={r.verdict?.bands} />}
         {r.verdict?.reasons?.length > 0 && (
           <ul className="mt-4 space-y-1.5 relative">
-            {r.verdict.reasons.map((x, i) => (
+            {r.verdict.reasons.slice(0, 2).map((x, i) => (
               <li key={i} className="flex gap-2 text-sm leading-snug">
                 <span className="size-1.5 rounded-full bg-white mt-[7px] shrink-0 opacity-90" />
                 <span>{x}</span>
@@ -461,38 +519,51 @@ function ResultView({
             ))}
           </ul>
         )}
+        {!unsupported && r.verdict?.components && (
+          <ScoreBreakdown c={r.verdict.components} cappedBy={r.verdict.capped_by} />
+        )}
       </div>
 
       {/* Headline stats */}
-      <Card className="p-5">
+      <Card className="p-5" data-testid="headline-stats">
         <div className="flex items-baseline gap-2">
           <span className="text-5xl font-black tracking-tight tabular-nums">{n}</span>
           <span className="text-lg font-semibold leading-tight">
             new outfit{n === 1 ? "" : "s"}
-            <span className="block text-xs font-medium text-black/50">created with your closet</span>
+            <span className="block text-xs font-medium text-black/50">
+              {maxPossible != null && !unsupported
+                ? `of ${maxPossible} a ${catNoun} could make with your closet`
+                : "created with your closet"}
+            </span>
           </span>
         </div>
         <div className="grid grid-cols-3 gap-2 mt-4">
-          <Stat label="Cost / outfit" value={money(r.value?.cost_per_outfit, currency, 2)} />
           <Stat
-            label="Value score"
-            value={vsPct == null ? "—" : `${Math.round(vsPct)}`}
-            suffix={vsPct == null ? "" : "/100"}
-            bar={vsPct}
+            label="Cost / wear"
+            value={cpw == null ? "—" : money(cpw, currency, 2)}
+            note={
+              cpw != null && bar != null
+                ? `${personalBar ? (barApprox ? "usual" : "your usual") : "typical"} ${barApprox}${money(bar, currency, 2)}`
+                : r.value?.expected_wears
+                  ? `~${Math.round(r.value.expected_wears)} wears`
+                  : undefined
+            }
+            tone={cpw != null && bar != null ? (cpw <= bar ? "good" : cpw > 2 * bar ? "bad" : "warn") : undefined}
           />
-          <Stat label="Price" value={money(r.value?.price, currency)} />
+          <Stat
+            label="Versatility"
+            value={maxPossible == null || unsupported ? "—" : `${n}`}
+            suffix={maxPossible == null || unsupported ? "" : `/${maxPossible}`}
+            bar={r.verdict?.components?.versatility?.score ?? null}
+            note={maxPossible ? `${Math.round((100 * n) / maxPossible)}% of max` : undefined}
+          />
+          <Stat
+            label={estimated ? "Price · est." : "Price"}
+            value={estimated ? `~${money(Math.round(r.value.price ?? 0), currency, 0)}` : money(r.value?.price, currency)}
+            note={r.value?.expected_wears ? `~${Math.round(r.value.expected_wears)} wears` : undefined}
+          />
         </div>
-        {r.value?.budget_remaining != null && (
-          <div className="mt-3 flex items-center justify-between rounded-2xl bg-paper px-3 py-2 text-sm">
-            <span className="text-black/55">Monthly budget left</span>
-            <span className={cn("font-bold tabular-nums", (r.value.price ?? 0) > r.value.budget_remaining ? "text-rose-600" : "")}>
-              {money(r.value.budget_remaining, currency)}
-              {r.value.price != null && (
-                <span className="font-medium text-black/40"> → {money(r.value.budget_remaining - r.value.price, currency)} after</span>
-              )}
-            </span>
-          </div>
-        )}
+        {onRecheck && !unsupported && <PriceCheck r={r} currency={currency} onRecheck={onRecheck} />}
       </Card>
 
       <RedundancyCard r={r} />
@@ -533,8 +604,8 @@ function ResultView({
       {/* Sustainability estimate (informational; hidden for unsupported items such as accessories) */}
       <SustainabilityCard s={r.sustainability} />
 
-      {/* Live-shopping picks: fetched after the verdict renders (SKIP -> alternatives, BUY -> pairings) */}
-      {!unsupported && (buy || decision === "SKIP") && (
+      {/* Live-shopping picks: fetched after the verdict renders (SKIP / CONSIDER -> alternatives, BUY -> pairings) */}
+      {!unsupported && (buy || consider || decision === "SKIP") && (
         <SuggestionsSection key={r.evaluation_id} evaluationId={r.evaluation_id} decision={decision} />
       )}
 
@@ -564,11 +635,115 @@ function ResultView({
   );
 }
 
-function Stat({ label, value, suffix, bar }: { label: string; value: string; suffix?: string; bar?: number | null }) {
+const CATEGORY_NOUN: Record<string, string> = {
+  top: "top",
+  bottom: "bottom",
+  outerwear: "layer",
+  dress: "dress",
+  shoes: "pair of shoes",
+};
+
+/** Estimated price note ("est. ~$60 · Estimated from brand and type …") + enter / override the price and re-check. */
+function PriceCheck({
+  r,
+  currency,
+  onRecheck,
+}: {
+  r: EvaluateResponse;
+  currency: string;
+  onRecheck: (price: number) => Promise<void>;
+}) {
+  const toast = useToast();
+  const estimated = r.value?.price_source === "estimated";
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState("");
+  const [busy, setBusy] = useState(false);
+  const n = Number(val);
+  const ok = val !== "" && Number.isFinite(n) && n >= 0;
+  const submit = async () => {
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await onRecheck(n);
+      setOpen(false);
+      setVal("");
+      toast("Verdict updated with your price");
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!estimated && !open) {
+    return (
+      <button onClick={() => setOpen(true)} className="mt-3 text-xs font-semibold text-accent" data-testid="change-price">
+        Change price &amp; re-check
+      </button>
+    );
+  }
+  const conf = r.value?.price_confidence;
   return (
-    <div className="rounded-2xl bg-paper px-3 py-2.5">
+    <div
+      className={cn("mt-3 rounded-2xl p-3", estimated ? "bg-amber-50 border border-amber-200" : "bg-paper")}
+      data-testid="price-estimate-note"
+    >
+      {estimated && (
+        <div className="flex gap-2 text-xs text-amber-900 leading-snug" title={EST_PRICE_NOTE}>
+          <Info className="size-4 shrink-0 mt-px" aria-label={EST_PRICE_NOTE} />
+          <span>
+            <b>{estMoney(r.value?.price, currency)}</b> — {EST_PRICE_NOTE}.
+            {conf ? <span className="text-amber-900/60"> ({conf} confidence)</span> : null}
+          </span>
+        </div>
+      )}
+      <div className={cn("flex gap-2", estimated && "mt-2.5")}>
+        <div className="relative flex-1 min-w-0">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-black/40">$</span>
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            step="0.01"
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submit()}
+            placeholder={estimated ? "Actual price" : "New price"}
+            aria-label="Price"
+            className="w-full h-9 rounded-full border border-black/10 bg-white pl-6 pr-3 text-sm font-semibold outline-none focus:border-accent"
+          />
+        </div>
+        <Button size="sm" variant="accent" onClick={submit} loading={busy} disabled={!ok}>
+          Re-check
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  suffix,
+  bar,
+  note,
+  tone,
+}: {
+  label: string;
+  value: string;
+  suffix?: string;
+  bar?: number | null;
+  note?: string;
+  tone?: "good" | "warn" | "bad";
+}) {
+  return (
+    <div className="rounded-2xl bg-paper px-3 py-2.5 min-w-0">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-black/45">{label}</div>
-      <div className="text-lg font-bold tabular-nums mt-0.5">
+      <div
+        className={cn(
+          "text-lg font-bold tabular-nums mt-0.5",
+          tone === "good" ? "text-emerald-700" : tone === "bad" ? "text-rose-600" : tone === "warn" ? "text-amber-700" : "",
+        )}
+      >
         {value}
         {suffix && <span className="text-xs font-medium text-black/40">{suffix}</span>}
       </div>
@@ -577,8 +752,59 @@ function Stat({ label, value, suffix, bar }: { label: string; value: string; suf
           <div className="h-full bg-accent" style={{ width: `${Math.max(0, Math.min(100, bar))}%` }} />
         </div>
       )}
+      {note && <div className="text-[11px] text-black/45 mt-0.5 truncate">{note}</div>}
     </div>
   );
+}
+
+/** 0-100 score with the SKIP | CONSIDER | BUY bands marked. */
+function ScoreBar({ score, bands }: { score: number; bands?: { BUY: number; CONSIDER: number } }) {
+  const buyAt = bands?.BUY ?? 65;
+  const considerAt = bands?.CONSIDER ?? 45;
+  const pos = Math.max(0, Math.min(100, score));
+  return (
+    <div className="relative mt-4" aria-hidden>
+      <div className="relative h-2 rounded-full bg-white/25 overflow-hidden">
+        <div className="absolute inset-y-0 left-0 bg-white/85 rounded-full" style={{ width: `${pos}%` }} />
+      </div>
+      <div className="absolute -top-0.5 h-3 w-px bg-white/70" style={{ left: `${considerAt}%` }} />
+      <div className="absolute -top-0.5 h-3 w-px bg-white/70" style={{ left: `${buyAt}%` }} />
+      <div className="relative h-3.5 mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/75">
+        <span className="absolute left-0">Skip</span>
+        <span className="absolute -translate-x-1/2" style={{ left: `${(considerAt + buyAt) / 2}%` }}>
+          Consider
+        </span>
+        <span className="absolute right-0">Buy</span>
+      </div>
+    </div>
+  );
+}
+
+/** Compact sub-score line: versatility, outfit quality, cost per wear (0-100) + gap-fill / similarity points. */
+function ScoreBreakdown({
+  c,
+  cappedBy,
+}: {
+  c: NonNullable<EvaluateResponse["verdict"]["components"]>;
+  cappedBy?: string | null;
+}) {
+  const parts: string[] = [];
+  const sc = (k: string, label: string) => {
+    const v = c[k]?.score;
+    if (v != null) parts.push(`${label} ${Math.max(0, Math.round(Number(v)))}`);
+  };
+  sc("versatility", "Versatility");
+  sc("outfit_quality", "Match quality");
+  sc("cost", "Cost/wear");
+  const gap = Number(c.gap_fill?.points ?? 0);
+  if (gap) parts.push(`${gap > 0 ? "+" : ""}${gap} ${gap > 0 ? "fills a gap" : "crowded"}`);
+  const sim = Number(c.similarity?.points ?? 0);
+  if (sim) parts.push(`${sim} similar`);
+  if (cappedBy === "near_duplicate") parts.push("capped: near-duplicate");
+  else if (cappedBy === "no_outfits") parts.push("capped: no outfits");
+  else if (cappedBy) parts.push("capped: nothing to pair with yet");
+  if (!parts.length) return null;
+  return <div className="mt-3 text-[11px] font-medium text-white/80 relative">{parts.join(" · ")}</div>;
 }
 
 function RedundancyCard({ r }: { r: EvaluateResponse }) {

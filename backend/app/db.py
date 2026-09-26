@@ -199,7 +199,7 @@ def get_settings() -> dict:
         row = c.execute("SELECT data FROM settings WHERE id=1").fetchone()
     data = dict(config.DEFAULT_SETTINGS)
     if row:
-        data.update(json.loads(row["data"]))
+        data.update({k: v for k, v in json.loads(row["data"]).items() if k in config.DEFAULT_SETTINGS})
     return data
 
 

@@ -104,9 +104,6 @@ let settings: Settings = {
   compat_threshold: 0.5,
   redundancy_similar_threshold: 0.82,
   redundancy_duplicate_threshold: 0.9,
-  min_new_outfits: 3,
-  max_cost_per_outfit: 10,
-  monthly_budget: 200,
   style_goal: "Minimal, versatile pieces that mix and match",
   occasions: ["work", "casual"],
 };
@@ -199,6 +196,16 @@ export const mockApi = {
     return clone(it);
   },
 
+  async getItem(id: string): Promise<Item> {
+    const it = closet.find((x) => x.id === id);
+    if (!it) throw new Error("not found");
+    return it;
+  },
+
+  async renderItem(id: string): Promise<Item> {
+    return this.getItem(id);
+  },
+
   async deleteItem(id: string) {
     await sleep(200);
     const i = closet.findIndex((x) => x.id === id);
@@ -215,7 +222,9 @@ export const mockApi = {
     const others = closet.filter((i) => i.id !== cand.id);
     const by = (c: string) => others.filter((i) => categoryKey(i.category) === c);
     const outfits: Outfit[] = [];
+    let tried = 0; // max possible outfits for this category (every base look tried)
     const push = (template: string, items: Item[]) => {
+      tried++;
       const score = 0.3 + 0.7 * hash(items.map((i) => i.id).join("|"));
       if (score >= settings.compat_threshold) outfits.push({ template, items, score });
     };
@@ -260,25 +269,23 @@ export const mockApi = {
         : top >= settings.redundancy_similar_threshold
           ? "similar"
           : "none";
+    // Simplified mirror of backend/app/verdict.py (mock mode only)
     const weighted = outfits.reduce((s, o) => s + o.score, 0);
     const n = outfits.length;
-    const cpo = n ? p / n : null;
-    const buy = n >= settings.min_new_outfits && level !== "near_duplicate" && (cpo ?? Infinity) <= settings.max_cost_per_outfit;
+    const m = Math.max(tried, 2);
+    const vers = n ? 0.5 * Math.min(1, Math.log1p(n) / Math.log1p(m)) + 0.5 * Math.min(1, Math.log1p(n) / Math.log1p(Math.min(8, m))) : 0;
+    const best = outfits.slice(0, 5);
+    const quality = best.length ? best.reduce((s, o) => s + o.score, 0) / best.length : 0;
+    const wears = 70 * Math.min(2, 0.5 + 0.25 * Math.log2(1 + n)) * (level === "near_duplicate" ? 0.5 : level === "similar" ? 0.75 : 1);
+    const cpw = p / wears;
+    const bar = 0.75;
+    const cost = Math.max(-0.5, Math.min(1, 0.6 + 0.3 * Math.log2(bar / Math.max(cpw, 1e-6))));
+    const score = Math.max(0, Math.min(100, Math.round(100 * (0.4 * vers + 0.2 * quality + 0.4 * cost) + (level === "similar" ? -5 : 0))));
+    const decision = level === "near_duplicate" || n === 0 ? "SKIP" : score >= 65 ? "BUY" : score >= 45 ? "CONSIDER" : "SKIP";
     const reasons: string[] = [];
-    reasons.push(
-      n >= settings.min_new_outfits
-        ? `Creates ${n} new outfits with what you already own`
-        : `Only ${n} new outfit${n === 1 ? "" : "s"} (you want at least ${settings.min_new_outfits})`,
-    );
-    if (cpo !== null)
-      reasons.push(
-        cpo <= settings.max_cost_per_outfit
-          ? `$${cpo.toFixed(2)} per outfit is under your $${settings.max_cost_per_outfit} limit`
-          : `$${cpo.toFixed(2)} per outfit is over your $${settings.max_cost_per_outfit} limit`,
-      );
     if (level === "near_duplicate") reasons.push("You already own something almost identical");
-    else if (level === "similar") reasons.push("It's similar to something you own, but still adds variety");
-    else reasons.push("Nothing like it in your closet yet");
+    reasons.push(n ? `Makes ${n} of the ${tried} outfits a ${k} can make with your closet` : "Doesn't go with anything in your closet yet");
+    reasons.push(`About $${cpw.toFixed(2)} per wear, ${cpw <= bar ? "below" : "above"} a typical $${bar.toFixed(2)}`);
     cand.attributes.price = p;
     return {
       item: clone(cand),
@@ -289,13 +296,29 @@ export const mockApi = {
       total_new_outfits: n,
       value: {
         price: p,
-        cost_per_outfit: cpo,
-        weighted_outfits: weighted,
-        value_score: Math.round(100 * Math.min(1, weighted / Math.max(1, p / 10))),
-        budget_remaining: settings.monthly_budget,
         currency: "USD",
+        cost_per_wear: Math.round(cpw * 100) / 100,
+        expected_wears: Math.round(wears),
+        price_bar: bar,
+        price_bar_source: "default",
+        versatility: { new_outfits: n, max_possible: tried, share: tried ? n / tried : null },
+        outfit_quality: quality,
+        weighted_outfits: weighted,
+        value_score: score,
       },
-      verdict: { decision: buy ? "BUY" : "SKIP", reasons },
+      verdict: {
+        decision,
+        score,
+        reasons: reasons.slice(0, 2),
+        components: {
+          versatility: { score: Math.round(100 * vers), weight: 0.4 },
+          outfit_quality: { score: Math.round(100 * quality), weight: 0.2 },
+          cost: { score: Math.round(100 * cost), weight: 0.4 },
+          gap_fill: { points: 0 },
+          similarity: { points: level === "similar" ? -5 : 0 },
+        },
+        bands: { BUY: 65, CONSIDER: 45 },
+      },
       evaluation_id: nid("ev"),
     };
   },

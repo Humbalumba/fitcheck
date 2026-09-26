@@ -14,6 +14,10 @@ const TITLES: Record<string, { title: string; sub: string }> = {
     title: "Better picks instead",
     sub: "Same type, different colors & textures — scored against your closet",
   },
+  CONSIDER: {
+    title: "Better picks instead",
+    sub: "Worth comparing before you decide — same type, scored against your closet",
+  },
   BUY: {
     title: "Pairs well with this",
     sub: "Real products that go with it and your closet — each a BUY too",
@@ -158,7 +162,7 @@ function displayName(name: string) {
 function SuggestionCard({ s, onOpen }: { s: Suggestion; onOpen?: () => void }) {
   const [src, setSrc] = useState(mediaUrl(s.photo_url || s.image_url));
   const [broken, setBroken] = useState(false);
-  const buy = String(s.verdict?.decision).toUpperCase() === "BUY";
+  const decision = String(s.verdict?.decision).toUpperCase();
   const retailer = s.retailer || s.brand || "the store";
   return (
     <div
@@ -202,10 +206,11 @@ function SuggestionCard({ s, onOpen }: { s: Suggestion; onOpen?: () => void }) {
         <span
           className={cn(
             "absolute top-2 left-2 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white",
-            buy ? "bg-emerald-500" : "bg-rose-500",
+            decision === "BUY" ? "bg-emerald-500" : decision === "CONSIDER" ? "bg-amber-500" : "bg-rose-500",
           )}
         >
-          {buy ? "Buy" : "Skip"}
+          {decision === "BUY" ? "Buy" : decision === "CONSIDER" ? "Consider" : "Skip"}
+          {s.verdict?.score != null && <span className="ml-1 opacity-80 tabular-nums">{s.verdict.score}</span>}
         </span>
       </div>
       <div className="flex-1 min-w-0 flex flex-col">

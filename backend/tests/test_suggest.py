@@ -174,9 +174,11 @@ def test_skip_alternatives_offline(client, candidates, offline_suggest):
     names = [s["name"] for s in d["suggestions"]]
     assert "Black Cami (near-duplicate)" not in names
     assert any(x["name"] == "Black Cami (near-duplicate)" for x in d["rejected"])
-    # ranking: BUY verdicts first, then more outfits
-    keys = [(s["verdict"]["decision"] == "BUY", s["total_new_outfits"]) for s in d["suggestions"]]
+    # ranking: own verdict first (BUY > CONSIDER > SKIP), then score
+    rank = {"BUY": 2, "CONSIDER": 1, "SKIP": 0}
+    keys = [(rank[s["verdict"]["decision"]], s["value"]["value_score"]) for s in d["suggestions"]]
     assert keys == sorted(keys, reverse=True)
+    assert all("per wear" in s["reason"] for s in d["suggestions"])
     # suggestions never enter the closet / FAISS
     assert client.get("/api/health").json()["closet_size"] == n0
     ids = {i["id"] for i in client.get("/api/closet/items").json()["items"]}
@@ -194,7 +196,8 @@ def test_buy_pairings_offline_and_cache(client, candidates, offline_suggest, mon
     assert 1 <= len(d["suggestions"]) <= 3
     cid = ev["item"]["id"]
     for s in d["suggestions"]:
-        assert s["verdict"]["decision"] == "BUY" and s["category"] in ("top", "outerwear", "shoes")
+        assert s["verdict"]["decision"] == "BUY" and s["verdict"]["score"] >= 65
+        assert s["category"] in ("top", "outerwear", "shoes")
         assert s["outfits_with_candidate"] >= 1 and "with the white trousers" in s["reason"]
         assert any(cid in [i["id"] for i in o["items"]] for o in s["outfits"])
         assert s["outfits"][0]["items"] and cid in [i["id"] for i in s["outfits"][0]["items"]]  # with-candidate first

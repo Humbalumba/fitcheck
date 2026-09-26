@@ -26,3 +26,11 @@ export function titleCase(s?: string | null): string {
 export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
 }
+
+/** "est. ~$60" (whole dollars; estimates are rough). */
+export function estMoney(n: number | null | undefined, currency = "USD"): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return "—";
+  return `est. ~${money(Math.round(n), currency, 0)}`;
+}
+
+export const EST_PRICE_NOTE = "Estimated from brand and type — enter the price for a more accurate verdict";

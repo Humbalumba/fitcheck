@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config, db, gemini, pipeline, suggest
-from .evaluate import evaluate as run_evaluate, sustainability_for, with_sustainability
+from .evaluate import evaluate as run_evaluate, sustainability_for, with_current_verdict, with_sustainability
 from .scoring import get_scorer, scorer_kind
 from .vectors import closet_index
 
@@ -48,6 +48,8 @@ def _warmup():
 def _startup():
     db.init_db()
     threading.Thread(target=_warmup, daemon=True).start()
+    from .pricing import start_background_backfill
+    start_background_backfill()  # price estimates for old unpriced items (1 batched Gemini text call, else table)
 
 
 # ------------------------------------------------------------------ models
@@ -70,9 +72,6 @@ class SettingsBody(BaseModel):
     redundancy_similar_threshold: Optional[float] = None
     redundancy_duplicate_threshold: Optional[float] = None
     redundancy_text_weight: Optional[float] = None
-    min_new_outfits: Optional[int] = None
-    max_cost_per_outfit: Optional[float] = None
-    monthly_budget: Optional[float] = None
     style_goal: Optional[str] = None
     occasions: Optional[list[str]] = None
     match_gender_presentation: Optional[bool] = None
@@ -94,7 +93,16 @@ def health():
             "gemini_model": gemini._model_name or (config.GEMINI_MODEL if config.GEMINI_MODEL != "auto" else None),
             "gemini_mode": config.GEMINI_MODE,
             "gemini_exhausted": sorted(n for n in gemini._exhausted if not gemini._available(n)),
+            "render": _render_status(),
             "closet_size": len(db.list_items(status="closet"))}
+
+
+def _render_status() -> dict | None:
+    try:
+        from . import render
+        return render.gemini_status()
+    except Exception:
+        return None
 
 
 @app.post("/api/detect")
@@ -142,6 +150,47 @@ def get_item(item_id: str):
     return pipeline.item_to_api(_item_or_404(item_id))
 
 
+class RenderBody(BaseModel):
+    mode: str = "auto"   # auto (Gemini redraw if available + verified, else cleanup) | gemini | cleanup
+    wait: bool = False   # true: render synchronously and return the finished item
+
+
+def _render_mode(mode: str) -> str:
+    if mode not in ("auto", "gemini", "cleanup"):
+        raise HTTPException(422, "mode must be auto, gemini or cleanup")
+    return mode
+
+
+@app.post("/api/items/{item_id}/render")
+def render_item(item_id: str, body: Optional[RenderBody] = None):
+    """(Re-)create the item's clean product image (app/render.py). Background by default: the response has
+    render_status='pending'; poll GET /api/items/{id} until it is 'done' (clean_image_url set) or 'failed'."""
+    from . import render
+    _item_or_404(item_id)
+    body = body or RenderBody()
+    mode = _render_mode(body.mode)
+    if body.wait:
+        try:
+            render.render_item(item_id, mode)
+        except Exception as e:
+            log.exception("render failed")
+            raise HTTPException(500, f"render failed: {type(e).__name__}: {e}")
+    else:
+        render.schedule([item_id], mode)
+    return pipeline.item_to_api(_item_or_404(item_id))
+
+
+@app.post("/api/closet/render")
+def render_closet(body: Optional[RenderBody] = None, only_missing: bool = False):
+    """Queue clean-image renders for every closet item (only_missing=true: items without a clean image yet)."""
+    from . import render
+    mode = _render_mode((body or RenderBody()).mode)
+    ids = [it["id"] for it in db.list_items(status="closet")
+           if not only_missing or not render.api_fields(it)["clean_image_url"]]
+    render.schedule(ids, mode)
+    return {"queued": ids}
+
+
 @app.post("/api/evaluate")
 def evaluate(body: EvaluateBody):
     _item_or_404(body.item_id)
@@ -154,12 +203,12 @@ def evaluate(body: EvaluateBody):
 
 @app.get("/api/evaluations/{evaluation_id}")
 def get_evaluation(evaluation_id: str):
-    """A saved evaluation (same shape as POST /api/evaluate). Evaluations saved before the sustainability score
-    existed get it computed on read (pure Python, no model calls)."""
+    """A saved evaluation (same shape as POST /api/evaluate). Evaluations saved before the sustainability score or
+    the BUY / CONSIDER / SKIP score existed get them computed on read (pure Python, no model calls)."""
     ev = db.get_evaluation(evaluation_id)
     if ev is None:
         raise HTTPException(404, f"evaluation {evaluation_id} not found")
-    res = with_sustainability(ev["results"])
+    res = with_current_verdict(with_sustainability(ev["results"]))
     res = {k: v for k, v in res.items() if k != "settings"}
     return {**res, "evaluation_id": evaluation_id, "created_at": ev.get("created_at")}
 
@@ -219,6 +268,6 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings(body: SettingsBody):
-    # exclude_unset: only fields the client sent; monthly_budget may be explicitly null (= no budget cap)
-    partial = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None or k == "monthly_budget"}
+    # exclude_unset: only fields the client sent (unknown / retired keys are ignored by the model)
+    partial = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     return db.update_settings(partial)

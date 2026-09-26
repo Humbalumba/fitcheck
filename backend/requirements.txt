@@ -10,6 +10,7 @@ numpy
 scipy
 pillow
 pillow-heif
+opencv-python-headless  # optional: GrabCut background removal for clean renders (app/render.py)
 fastapi>=0.110
 uvicorn[standard]
 python-multipart

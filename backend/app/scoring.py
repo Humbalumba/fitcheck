@@ -187,7 +187,8 @@ def ensure_compat_embeddings(items: list[dict]) -> dict[str, np.ndarray]:
     have = db.get_embeddings([i["id"] for i in items], COMPAT_KIND, mid)
     for it in items:
         if it["id"] not in have:
-            path = it.get("white_path") or it.get("cutout_path") or it.get("crop_path")
+            from .render import embedding_image_path  # verified Gemini render if any, else the cutout on white
+            path = embedding_image_path(it) or it.get("white_path") or it.get("cutout_path") or it.get("crop_path")
             v = np.asarray(scorer.embed_item(path, item_text(it)), dtype=np.float32)
             db.put_embedding(it["id"], COMPAT_KIND, mid, v)
             have[it["id"]] = v
