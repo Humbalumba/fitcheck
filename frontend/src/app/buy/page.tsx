@@ -509,7 +509,7 @@ function ResultView({
       {/* Actions */}
       <div className="sticky bottom-20 z-10 pt-2">
         <div className="rounded-3xl bg-white/95 backdrop-blur border border-black/5 shadow-xl p-2.5 flex gap-2">
-          <Button variant="secondary" onClick={onAgain} className="shrink-0 w-11 px-0 sm:w-auto sm:px-5" aria-label="Try another" title="Try another">
+          <Button variant="secondary" onClick={onAgain} className="shrink-0 w-11 !px-0 sm:w-auto sm:!px-5" aria-label="Try another" title="Try another">
             <RotateCcw className="size-4" /> <span className="hidden sm:inline">Try another</span>
           </Button>
           {added ? (

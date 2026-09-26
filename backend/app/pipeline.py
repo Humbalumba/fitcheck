@@ -79,7 +79,7 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
     boxes, detector = [], "none"
     if gemini.is_configured():
         try:
-            boxes = gemini.detect_boxes(img)
+            boxes = gemini.detect_items(img) if config.GEMINI_MODE == "single" else gemini.detect_boxes(img)
             detector = "gemini"
         except Exception as e:
             log.warning("Gemini detection failed (%s: %s); using whole image", type(e).__name__, str(e)[:200])
@@ -93,14 +93,27 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
         boxes = [{"box_2d": [0, 0, 1000, 1000], "label": "clothing item"}]
         detector = detector if detector == "gemini" else "whole_image"
 
+    def _area(bx):
+        return (bx[2] - bx[0]) * (bx[3] - bx[1])
+
     futures = []
     for n, b in enumerate(boxes):
         crop_box = _box_px(b["box_2d"], W, H, config.CROP_PAD_FRAC)
         crop = img.crop(crop_box)
         ctx = img.crop(_box_px(b["box_2d"], W, H, 0.35))
         ctx.thumbnail((1024, 1024))
-        hint = guess_category_from_label(b["label"])
-        rgba, white, seg_info = segment_crop(crop, hint)
+        hint = (b.get("attributes") or {}).get("category") or guess_category_from_label(b["label"])
+        bx0, by0, bx1, by1 = _box_px(b["box_2d"], W, H, 0.0)
+        inner = (bx0 - crop_box[0], by0 - crop_box[1], bx1 - crop_box[0], by1 - crop_box[1])
+        exclude = []  # smaller items lying on/inside this one (flat lays): keep them out of this cutout
+        for m, o in enumerate(boxes):
+            if m == n or _area(o["box_2d"]) >= 0.8 * _area(b["box_2d"]):
+                continue
+            ox0, oy0, ox1, oy1 = _box_px(o["box_2d"], W, H, 0.0)
+            if ox1 <= crop_box[0] or ox0 >= crop_box[2] or oy1 <= crop_box[1] or oy0 >= crop_box[3]:
+                continue
+            exclude.append((ox0 - crop_box[0], oy0 - crop_box[1], ox1 - crop_box[0], oy1 - crop_box[1]))
+        rgba, white, seg_info = segment_crop(crop, hint, inner=inner, exclude=exclude)
         base = f"{stem}_{n}"
         paths = {
             "crop": config.MEDIA_DIR / "crops" / f"{base}.jpg",
@@ -112,11 +125,14 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
         rgba.save(paths["cutout"])
         white.save(paths["white"], quality=92)
         ctx.save(paths["context"], quality=85)
-        futures.append((b, paths, seg_info, _executor.submit(_identify, white, ctx, b["label"])))
+        if b.get("attributes"):  # single-call mode: attributes came with the box
+            futures.append((b, paths, seg_info, None))
+        else:
+            futures.append((b, paths, seg_info, _executor.submit(_identify, white, ctx, b["label"])))
 
     items = []
     for b, paths, seg_info, fut in futures:
-        attrs = fut.result()
+        attrs = dict(b["attributes"]) if fut is None else fut.result()
         attrs["segmentation"] = seg_info.get("strategy")
         iid = db.insert_item(status="detected", category=attrs.get("category"), attributes=attrs, photo_id=photo_id,
                              bbox=b["box_2d"], label=b["label"], crop_path=paths["crop"],

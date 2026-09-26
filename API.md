@@ -48,15 +48,18 @@ Attributes are free-form JSON: the UI can PATCH any key. Extra keys may appear (
 
 ## GET /api/health
 ```json
-{"ok": true, "gemini": true, "scorer": "outfit_transformer", "gemini_model": "gemini-2.5-flash", "closet_size": 40}
+{"ok": true, "gemini": true, "scorer": "outfit_transformer", "gemini_model": "gemini-3-flash-preview",
+ "gemini_mode": "single", "gemini_exhausted": [], "closet_size": 40}
 ```
-`gemini_model` is the auto-selected newest Flash model once resolved, else null.
+`gemini_model` = model currently in use (after failover), null until first resolved. `gemini_exhausted` = models
+whose free-tier quota is used up (skipped until reset). `gemini_mode` = `single` (1 call/photo) | `two_stage`.
 `gemini` = an API key is configured. `scorer` = `"outfit_transformer"` (real model) or `"stub"` (temporary placeholder).
 
 ## POST /api/detect
 Multipart: `file` (jpeg/png/webp/heic), optional `purpose` = `closet` | `candidate`.
-Runs Stage 1 (Gemini boxes → segformer cutout) + Stage 2 (Gemini attributes). All items are saved with
-`status: "detected"`. Takes ~3-15 s depending on item count.
+Runs Stage 1+2 (one Gemini call: boxes + attributes → segformer cutout per box, plain crop when the mask is
+poor). All items are saved with `status: "detected"`. Takes ~5-12 s (up to ~25 s if Gemini is busy).
+`attributes.segmentation` = `category` | `dominant` | `garment_union` | `fallback_crop`.
 ```json
 {
   "photo_id": "ph_e032095d0228",

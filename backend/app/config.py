@@ -17,10 +17,19 @@ os.environ.setdefault("HF_HOME", str(MODELS_DIR / "hf"))
 
 # --- Gemini -----------------------------------------------------------------
 # "auto" = list models via the API and pick the newest stable-ish Flash model.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "auto")
-GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+# Default chosen by scripts/test_gemini.py comparison (Sep 2026): gemini-3-flash-preview gives the same tight
+# boxes as the newest gemini-3.8-flash but is 2-4x faster (supports thinking_level=minimal) and less often
+# overloaded. gemini-2.5-flash returns 404 for new API keys. "auto" = newest Flash first.
+# Whatever is first, the rest of the Flash models form a failover chain (free tier: 20 requests/day/model).
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+# gemini-2.5-flash now returns 404 "no longer available to new users" for new keys; the alias always resolves.
+GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
+GEMINI_RETRIES = int(os.environ.get("GEMINI_RETRIES", "2"))
+GEMINI_CHAIN_MAX = int(os.environ.get("GEMINI_CHAIN_MAX", "6"))  # how many models to fail over through
+# single: one call per photo returns boxes + attributes; two_stage: detect boxes, then one identify call per item
+GEMINI_MODE = os.environ.get("GEMINI_MODE", "single")
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "60"))
-GEMINI_MAX_PARALLEL = int(os.environ.get("GEMINI_MAX_PARALLEL", "6"))
+GEMINI_MAX_PARALLEL = int(os.environ.get("GEMINI_MAX_PARALLEL", "3"))
 
 # --- Models -----------------------------------------------------------------
 SEGFORMER_MODEL = os.environ.get("SEGFORMER_MODEL", "mattmdjaga/segformer_b2_clothes")

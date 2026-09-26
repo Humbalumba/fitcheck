@@ -92,6 +92,8 @@ def _item_or_404(item_id: str) -> dict:
 def health():
     return {"ok": True, "gemini": gemini.is_configured(), "scorer": scorer_kind(block=False),
             "gemini_model": gemini._model_name or (config.GEMINI_MODEL if config.GEMINI_MODEL != "auto" else None),
+            "gemini_mode": config.GEMINI_MODE,
+            "gemini_exhausted": sorted(n for n in gemini._exhausted if not gemini._available(n)),
             "closet_size": len(db.list_items(status="closet"))}
 
 

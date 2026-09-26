@@ -43,11 +43,20 @@ class Gender(str, Enum):
 
 
 class Attributes(BaseModel):
-    category: Category
-    subcategory: str = Field(description="e.g. t-shirt, polo, button-down shirt, blouse, sweater, hoodie, tank top, "
-                                         "jeans, chinos, trousers, skirt, shorts, leggings, blazer, jacket, coat, "
-                                         "cardigan, sneakers, boots, heels, bag, belt, hat")
-    primary_color: str = Field(description="simple color name, e.g. navy, white, black, olive, beige")
+    category: Category = Field(description="top = shirts/tees/blouses/sweaters/hoodies worn as the base upper layer; "
+                                           "outerwear = anything worn OVER a top: jackets (incl. hooded/zip/denim/"
+                                           "bomber/windbreaker), coats, blazers, suit jackets, cardigans, vests; "
+                                           "bottom = pants/jeans/skirts/shorts; dress = dresses/jumpsuits; "
+                                           "accessory = bags, belts, hats, jewelry, sunglasses, scarves, ties")
+    subcategory: str = Field(description="specific type, e.g. tops: t-shirt, long-sleeve tee, polo, button-down "
+                                         "shirt, blouse, sweater, hoodie, tank top; bottoms: jeans, chinos, trousers, "
+                                         "skirt, shorts, leggings; dress: dress, maxi dress, jumpsuit; outerwear: "
+                                         "blazer, jacket, coat, cardigan, vest; shoes: sneakers, boots, heels, flats, "
+                                         "loafers, sandals; accessory: bag, belt, hat, sunglasses, necklace, "
+                                         "jewelry, scarf, tie, watch")
+    primary_color: str = Field(description="dominant garment color as ONE simple name; look carefully: dark navy is navy, not black (black, white, grey, navy, blue, "
+                                           "light blue, red, burgundy, pink, orange, yellow, green, olive, khaki, "
+                                           "beige, cream, brown, tan, purple, lavender, multicolor); ignore background")
     secondary_colors: list[str]
     pattern: str = Field(description="solid, striped, plaid, checked, floral, graphic, polka dot, camo, ...")
     fabric_guess: str
@@ -130,25 +139,66 @@ def pick_newest_flash(names: list[str]) -> str | None:
     return best
 
 
-def model_name() -> str:
-    global _model_name
-    if _model_name:
-        return _model_name
-    if config.GEMINI_MODEL != "auto":
-        _model_name = config.GEMINI_MODEL
-        return _model_name
+_chain: list[str] | None = None
+_exhausted: dict[str, float] = {}  # model -> unix time when its daily free-tier quota resets
+
+
+def _flash_sort_key(n: str):
+    m = _FLASH_RE.match(n)
+    return (float(m.group(1)), m.group(2) is None, m.group(3) or "") if m else (0.0, False, "")
+
+
+def model_chain() -> list[str]:
+    """Models to try in order. Free-tier keys get ~20 requests/day *per model*, so when one model's daily
+    quota is exhausted we fail over to the next Flash model instead of dropping to the offline fallback."""
+    global _chain
+    if _chain is not None:
+        return _chain
+    listed: list[str] = []
     try:
-        names = []
         for m in client().models.list():
             actions = getattr(m, "supported_actions", None) or []
-            if not actions or "generateContent" in actions:
-                names.append(m.name)
-        _model_name = pick_newest_flash(names) or config.GEMINI_FALLBACK_MODEL
-        log.info("Gemini model auto-selected: %s", _model_name)
+            if (not actions or "generateContent" in actions) and _FLASH_RE.match(m.name):
+                listed.append(m.name.split("/")[-1])
     except Exception as e:
-        log.warning("Could not list Gemini models (%s); using %s", type(e).__name__, config.GEMINI_FALLBACK_MODEL)
-        _model_name = config.GEMINI_FALLBACK_MODEL
+        log.warning("Could not list Gemini models (%s)", type(e).__name__)
+    listed = sorted(set(listed), key=_flash_sort_key, reverse=True)
+    first = [] if config.GEMINI_MODEL == "auto" else [config.GEMINI_MODEL]
+    chain = first + [n for n in listed if n not in first] + [config.GEMINI_FALLBACK_MODEL]
+    _chain = list(dict.fromkeys(chain))[: config.GEMINI_CHAIN_MAX]
+    if config.GEMINI_FALLBACK_MODEL not in _chain:
+        _chain.append(config.GEMINI_FALLBACK_MODEL)
+    log.info("Gemini model chain: %s", _chain)
+    return _chain
+
+
+def _available(name: str) -> bool:
+    import time as _time
+    until = _exhausted.get(name)
+    return until is None or _time.time() >= until
+
+
+def model_name() -> str:
+    """The model currently in use (first model in the chain whose daily quota isn't exhausted)."""
+    global _model_name
+    for n in model_chain():
+        if _available(n):
+            _model_name = n
+            return n
+    _model_name = model_chain()[0]
     return _model_name
+
+
+def _mark_exhausted(name: str, err: Exception) -> None:
+    import datetime as _dt
+    import time as _time
+    now = _dt.datetime.now(_dt.timezone.utc)
+    reset = now.replace(hour=7, minute=0, second=0, microsecond=0)  # quotas reset at midnight Pacific
+    if reset <= now:
+        reset += _dt.timedelta(days=1)
+    per_day = "PerDay" in str(err)
+    _exhausted[name] = reset.timestamp() if per_day else _time.time() + 60
+    log.warning("Gemini model %s quota exhausted (%s); failing over", name, "daily" if per_day else "per-minute")
 
 
 def _img_part(img: Image.Image, fmt: str = "JPEG"):
@@ -159,40 +209,84 @@ def _img_part(img: Image.Image, fmt: str = "JPEG"):
     return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg" if fmt == "JPEG" else "image/png")
 
 
-_working_variant: int | None = None
+_working_variant: dict[str, int] = {}  # model -> index of the thinking config it accepts
+_RETRY_DELAY_RE = re.compile(r"retry(?:Delay)?['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", re.I)
+
+
+def _is_status(e: Exception, *codes: int) -> bool:
+    code = getattr(e, "code", None) or getattr(e, "status_code", None)
+    return code in codes or any(f"{c} " in str(e)[:12] for c in codes)
+
+
+def _call(name: str, contents, cfg):
+    """generate_content with short retries on transient 503/500 and per-minute 429s.
+    A daily-quota 429 is raised immediately (the caller fails over to the next model)."""
+    import time as _time
+    last = None
+    for attempt in range(config.GEMINI_RETRIES + 1):
+        try:
+            return client().models.generate_content(model=name, contents=contents, config=cfg)
+        except Exception as e:
+            last = e
+            if (not _is_status(e, 429, 500, 503) or attempt == config.GEMINI_RETRIES
+                    or (_is_status(e, 429) and "PerDay" in str(e))):
+                raise
+            m = _RETRY_DELAY_RE.search(str(e))
+            delay = min(float(m.group(1)) + 0.5, 20.0) if m else min(2.0 * (2 ** attempt), 10.0)
+            log.warning("Gemini %s busy/rate-limited (%s); retry %d in %.1fs", name, type(e).__name__, attempt + 1, delay)
+            _time.sleep(delay)
+    raise last
+
+
+def _thinking_variants(name: str, low_thinking: bool):
+    from google.genai import types
+    v = []
+    if low_thinking:
+        if re.search(r"gemini-2\.", name):
+            v.append(dict(thinking_config=types.ThinkingConfig(thinking_budget=0)))
+        else:
+            v.append(dict(thinking_config=types.ThinkingConfig(thinking_level="minimal")))
+            v.append(dict(thinking_config=types.ThinkingConfig(thinking_level="low")))
+    v.append({})
+    return v
 
 
 def _generate(contents, schema, low_thinking: bool = True):
     from google.genai import types
-    name = model_name()
     base = dict(response_mime_type="application/json", response_schema=schema, temperature=0.2)
-    attempts = []
-    if low_thinking:
-        if re.search(r"gemini-2\.", name):
-            attempts.append(dict(thinking_config=types.ThinkingConfig(thinking_budget=0)))
-        else:
-            attempts.append(dict(thinking_config=types.ThinkingConfig(thinking_level="minimal")))
-            attempts.append(dict(thinking_config=types.ThinkingConfig(thinking_level="low")))
-    attempts.append({})
-    global _working_variant
-    if _working_variant is not None and _working_variant < len(attempts):
-        attempts = attempts[_working_variant:]
-        offset = _working_variant
-    else:
-        offset = 0
     last = None
-    for n, extra in enumerate(attempts):
-        try:
-            resp = client().models.generate_content(
-                model=name, contents=contents, config=types.GenerateContentConfig(**base, **extra))
-            _working_variant = offset + n  # remember which thinking config this model accepts
-            if getattr(resp, "parsed", None) is not None:
-                return resp.parsed
-            return schema.model_validate_json(resp.text)
-        except Exception as e:  # unsupported thinking config etc. -> try next variant
-            last = e
-            log.warning("Gemini call failed with %s (%s); retrying variant", type(e).__name__, str(e)[:200])
-    raise last
+    tried = set()
+    while True:
+        name = model_name()
+        if name in tried:
+            break
+        tried.add(name)
+        variants = _thinking_variants(name, low_thinking)
+        start = min(_working_variant.get(name, 0), len(variants) - 1)
+        failover = False
+        for n in range(start, len(variants)):
+            try:
+                resp = _call(name, contents, types.GenerateContentConfig(**base, **variants[n]))
+                _working_variant[name] = n
+                if getattr(resp, "parsed", None) is not None:
+                    return resp.parsed
+                return schema.model_validate_json(resp.text)
+            except Exception as e:
+                last = e
+                if _is_status(e, 404, 429) or (_is_status(e, 500, 503)):
+                    # model gone / quota exhausted / still overloaded after retries -> next model
+                    if _is_status(e, 429):
+                        _mark_exhausted(name, e)
+                    else:
+                        import time as _time
+                        _exhausted[name] = _time.time() + (86400 if _is_status(e, 404) else 30)
+                        log.warning("Gemini model %s unavailable (%s); failing over", name, str(e)[:80])
+                    failover = True
+                    break
+                log.warning("Gemini call failed with %s (%s); retrying variant", type(e).__name__, str(e)[:200])
+        if not failover:
+            break
+    raise last if last else RuntimeError("no Gemini model available")
 
 
 # ------------------------------------------------------------------ Stage 1a
@@ -202,7 +296,7 @@ Photos may be flat lays of several garments on a floor or bed, items on hangers/
 Rules:
 - One box per garment. A pair of shoes is ONE item. Do not box people, faces, hangers, furniture, or tags.
 - If a garment is worn, box only that garment (e.g. shirt and pants separately).
-- Boxes must tightly contain the whole garment.
+- Boxes must tightly contain the whole visible garment, including parts partly covered by other items.
 Return box_2d as [ymin, xmin, ymax, xmax] normalized to 0-1000 and a short descriptive label (color + type)."""
 
 
@@ -237,3 +331,40 @@ def identify(cutout_white: Image.Image, context: Image.Image, label: str) -> dic
     d["formality_label"] = FORMALITY_LABELS[d["formality"]]
     d["source"] = "gemini"
     return d
+
+
+# ------------------------------------------------------------------ Stage 1+2 in one call
+class DetectedItem(Attributes):
+    box_2d: list[int] = Field(description="[ymin, xmin, ymax, xmax] normalized to 0-1000, tight around the garment")
+    label: str = Field(description="short label, color + type, e.g. 'navy hooded zip jacket'")
+
+
+class DetectedItems(BaseModel):
+    items: list[DetectedItem]
+
+
+DETECT_DESCRIBE_PROMPT = DETECT_PROMPT + """
+For EACH detected item also return its catalogue attributes (category, subcategory, colors, pattern, fabric,
+formality 1-5, seasons, 3-6 style tags, gender presentation, brand only if a logo/label is clearly readable,
+price+currency ONLY if a price tag attached to that item is clearly readable, else null, one-line description).
+Jackets, blazers, coats, cardigans and vests are category "outerwear", never "top"."""
+
+
+def detect_items(img: Image.Image) -> list[dict]:
+    """One Gemini call: boxes + full attributes for every garment (saves 1 request per item vs detect+identify)."""
+    res: DetectedItems = _generate([DETECT_DESCRIBE_PROMPT, _img_part(img)], DetectedItems)
+    out = []
+    for it in res.items[:25]:
+        if len(it.box_2d) != 4:
+            continue
+        y0, x0, y1, x1 = [max(0, min(1000, int(v))) for v in it.box_2d]
+        if y1 <= y0 or x1 <= x0 or (y1 - y0) * (x1 - x0) < 400:
+            continue
+        d = json.loads(it.model_dump_json())
+        d.pop("box_2d", None)
+        label = d.pop("label", "").strip() or d.get("description", "clothing item")
+        d["formality"] = int(max(1, min(5, d.get("formality") or 2)))
+        d["formality_label"] = FORMALITY_LABELS[d["formality"]]
+        d["source"] = "gemini"
+        out.append({"box_2d": [y0, x0, y1, x1], "label": label, "attributes": d})
+    return out

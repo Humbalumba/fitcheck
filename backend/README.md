@@ -48,13 +48,15 @@ next to real multi-item photos (flat lays, clothes on a bed, mannequin) for Stag
 ```bash
 python -m pytest tests -q     # 18 tests on a snapshot copy of the DB; ~15 s
 GEMINI_API_KEY=... python scripts/test_gemini.py   # Stage 1+2 on data/test_images (throwaway DB)
+# previews: /tmp/gemini_<model>_<photo>.jpg (boxes) and ..._cuts.jpg (cutouts + segmentation strategy)
+# compare a model: GEMINI_MODEL=gemini-3.7-flash GEMINI_FALLBACK_MODEL=gemini-3.7-flash GEMINI_CHAIN_MAX=1 python scripts/test_gemini.py
 ```
 
 ## Pipeline
 | Stage | Where | What |
 |---|---|---|
-| 1 Capture & segment | `app/pipeline.py`, `app/gemini.py`, `app/segment.py` | Gemini `box_2d` boxes (structured output) → padded crop → segformer_b2_clothes mask (category classes, fallback to dominant clothing class, largest components, fill holes) → transparent PNG + white JPG. Poor mask → plain crop. Offline fallback: segformer box proposals. |
-| 2 Identify | `app/gemini.py` (`Attributes` schema) | cutout + context crop → category, subcategory, colors, pattern, fabric, formality 1-5, seasons, style tags, gender, brand, price (only if tag visible). Offline fallback: fashion-clip zero-shot (`app/fallback.py`). |
+| 1 Capture & segment | `app/pipeline.py`, `app/gemini.py`, `app/segment.py` | Default `GEMINI_MODE=single`: ONE Gemini call per photo returns `box_2d` boxes + full attributes for every garment (structured output). Padded crop → segformer_b2_clothes mask candidates (category classes / dominant class / garment-class union, since segformer confuses trousers↔"dress" on flat lays) → quality gate (mask must span ≥80% of the tight Gemini box and fill ≥25%) → transparent PNG + white JPG. Poor mask, accessories segformer can't see, or an item >30% covered by other detected items (dense flat lay) → plain crop. Offline fallback: segformer box proposals. |
+| 2 Identify | `app/gemini.py` (`Attributes` schema) | category (jackets/blazers/cardigans = outerwear), subcategory, colors, pattern, fabric, formality 1-5, seasons, style tags, gender, brand, price (only if a tag is readable). `GEMINI_MODE=two_stage` = boxes first, then one call per item with cutout + context crop (N+1 requests). Offline fallback: fashion-clip zero-shot (`app/fallback.py`). |
 | Storage | `app/db.py` | SQLite `data/fitcheck.db`: photos, items, item_embeddings, compat_edges (outfit score cache), evaluations, outfits, outfit_items, settings. |
 | Vectors | `app/vectors.py` | fashion-clip image embeddings (white cutout, L2-norm) in FAISS `IndexIDMap(IndexFlatIP)` → `data/closet.faiss` (+ `closet.ids.npy`). Rebuilt from DB if stale. |
 | 3-4 Redundancy | `app/evaluate.py::redundancy` | same-category closet items, similarity = 0.7·image cosine (FAISS) + 0.3·text cosine (fashion-clip text embedding of "color pattern subcategory"). ≥0.88 near duplicate, ≥0.80 similar. |
@@ -103,3 +105,14 @@ Remaining budget = `monthly_budget` − prices of items bought (add-to-closet) t
   garment may score higher — adjust via `/api/settings` if needed.
 * Seeded attributes come from product names + zero-shot, so a few colors/subcategories are off (editable via PATCH).
 * Accessories (bags, jewellery...) are not evaluated (`UNSUPPORTED`).
+
+## Gemini model & quota (tested 2026-09-25/26)
+- Default `GEMINI_MODEL=gemini-3-flash-preview`: same tight boxes as `gemini-3.8-flash` (newest, what "auto" picks)
+  on the shared test photos, but 2-4 s per photo vs 3-14 s (3.8 rejects `thinking_level=minimal`, needs "low")
+  and fewer 503 "high demand" errors. `gemini-2.5-flash` returns **404 "no longer available to new users"** for
+  this key; `gemini-3.5-flash` was overloaded (503s, ~20 s).
+- Free-tier key = **20 requests/day per model** (resets midnight PT = 3 AM ET) plus a per-minute limit. That's why
+  single-call mode is the default (1 request per photo instead of 1 + items).
+- Failover chain: the configured model, then every listed Flash model newest-first, then `gemini-flash-latest`.
+  A daily-quota 429 marks the model exhausted until reset and moves on; per-minute 429 / 503 are retried briefly.
+  `/api/health` shows `gemini_model` (current) and `gemini_exhausted`.

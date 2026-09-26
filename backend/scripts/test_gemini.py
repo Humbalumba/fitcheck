@@ -23,13 +23,35 @@ from app import config, gemini, pipeline  # noqa: E402
 
 if not gemini.is_configured():
     sys.exit("GEMINI_API_KEY not set")
-print("model:", gemini.model_name())
+MODEL = gemini.model_name()
+TAG = os.environ.get("GEMINI_TAG") or MODEL
+print("model:", MODEL)
+_fn = "detect_items" if config.GEMINI_MODE == "single" else "detect_boxes"
+_orig_detect = getattr(gemini, _fn)
+_t_detect = {}
+
+
+def _timed_detect(img):
+    t0 = time.time()
+    try:
+        return _orig_detect(img)
+    finally:
+        _t_detect["s"] = time.time() - t0
+
+
+setattr(gemini, _fn, _timed_detect)
+print("mode:", config.GEMINI_MODE)
+summary = []
 imgs = sys.argv[1:] or [str(p) for p in sorted(config.TEST_IMAGES_DIR.glob("*.jpg"))
                         if not p.name.startswith("product_")] + [str(config.TEST_IMAGES_DIR / "product_dress_womens.jpg")]
 for path in imgs:
     t = time.time()
     res = pipeline.detect(Path(path).read_bytes(), "closet", source="gemini_test")
-    print(f"\n=== {Path(path).name}: detector={res['detector']} items={len(res['items'])} ({time.time()-t:.1f}s)")
+    total = time.time() - t
+    print(f"\n=== {Path(path).name}: detector={res['detector']} items={len(res['items'])} "
+          f"(boxes {_t_detect.get('s', 0):.1f}s, total {total:.1f}s)")
+    summary.append((Path(path).name, len(res["items"]), _t_detect.get("s", 0), total))
+    print("  model used:", gemini._model_name)
     im = Image.open(config.MEDIA_DIR / res["image_url"][len("/media/"):]).convert("RGB")
     d = ImageDraw.Draw(im)
     for it in res["items"]:
@@ -43,4 +65,19 @@ for path in imgs:
                                                         "pattern", "fabric_guess", "formality", "formality_label",
                                                         "seasons", "style_tags", "gender_presentation", "brand",
                                                         "price", "currency", "description")}))
-    im.save(f"/tmp/gemini_{Path(path).stem}.jpg")
+    im.save(f"/tmp/gemini_{TAG}_{Path(path).stem}.jpg")
+    # cutout contact sheet (white-background cutouts as the closet will show them)
+    cuts = [Image.open(config.MEDIA_DIR / it["image_url"][len("/media/"):]).convert("RGB") for it in res["items"]]
+    if cuts:
+        sheet = Image.new("RGB", (200 * min(len(cuts), 6), 220 * ((len(cuts) + 5) // 6)), "white")
+        sd = ImageDraw.Draw(sheet)
+        for k, (c, it) in enumerate(zip(cuts, res["items"])):
+            c.thumbnail((196, 196))
+            sheet.paste(c, ((k % 6) * 200 + 2, (k // 6) * 220 + 2))
+            sd.text(((k % 6) * 200 + 2, (k // 6) * 220 + 202),
+                    f"{it['attributes'].get('segmentation')}|{it['category']}", fill="black")
+        sheet.save(f"/tmp/gemini_{TAG}_{Path(path).stem}_cuts.jpg")
+
+print("\nSUMMARY", TAG)
+for name, n, tb, tt in summary:
+    print(f"  {name:32s} items={n:2d} boxes={tb:5.1f}s total={tt:5.1f}s")

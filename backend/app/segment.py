@@ -42,8 +42,51 @@ def guess_category_from_label(label: str) -> str | None:
     return None
 
 
-def segment_crop(crop: Image.Image, category_hint: str | None, max_side: int = 512):
-    """Return (cutout_rgba, white_rgb, info). Falls back to the plain crop if the mask is poor."""
+def mask_quality(mask: np.ndarray, inner: tuple[int, int, int, int] | None, category: str | None) -> tuple[bool, dict]:
+    """A good cutout of a *tightly boxed* garment spans most of the box and fills a decent part of it.
+    Masks that only cover a fragment (occluded garment, segformer picked the neighbouring item on a flat lay)
+    are rejected so the caller can fall back to the plain crop."""
+    H, W = mask.shape
+    x0, y0, x1, y1 = inner or (0, 0, W, H)
+    sub = mask[y0:y1, x0:x1]
+    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    if not sub.any():
+        return False, {"span_w": 0.0, "span_h": 0.0, "fill": 0.0}
+    ys, xs = np.where(sub)
+    span_w = (xs.max() - xs.min() + 1) / bw
+    span_h = (ys.max() - ys.min() + 1) / bh
+    fill = sub.sum() / float(bw * bh)
+    q = {"span_w": round(float(span_w), 2), "span_h": round(float(span_h), 2), "fill": round(float(fill), 2)}
+    min_span = 0.65 if category == "accessory" else 0.8
+    min_fill = 0.2 if category == "accessory" else 0.25
+    return (span_w >= min_span and span_h >= min_span and fill >= min_fill), q
+
+
+GARMENT_CLASSES = {4, 5, 6, 7}  # segformer often mixes these up on flat lays (trousers -> "Dress", shoes -> "Upper")
+
+
+def _clean(mask: np.ndarray) -> np.ndarray:
+    mask = ndimage.binary_closing(mask, structure=np.ones((5, 5)), iterations=2)
+    lab, n = ndimage.label(mask)
+    if n > 1:  # keep largest component (+ big secondary parts e.g. two shoes)
+        sizes = ndimage.sum(mask, lab, range(1, n + 1))
+        keep_ids = [i + 1 for i, s in enumerate(sizes) if s >= 0.3 * sizes.max()]
+        mask = np.isin(lab, keep_ids)
+    mask = ndimage.binary_fill_holes(mask)
+    return ndimage.binary_opening(mask, structure=np.ones((3, 3)))
+
+
+def segment_crop(crop: Image.Image, category_hint: str | None, max_side: int = 512,
+                 inner: tuple[int, int, int, int] | None = None,
+                 exclude: list[tuple[int, int, int, int]] | None = None):
+    """Return (cutout_rgba, white_rgb, info). Falls back to the plain crop if the mask is poor.
+
+    inner   = the detector's (unpadded) box in crop pixel coords (used by the quality gate).
+    exclude = boxes (crop coords) of other, smaller detected items overlapping this crop; if they cover
+              > 30% of this item's box (dense/overlapping flat lay) the plain crop is returned.
+    Candidates: A = segformer classes of the category; B = any garment class minus excluded boxes
+    (for garments/shoes; segformer confuses garment classes on flat lays). The first candidate passing
+    mask_quality wins (A preferred when it covers most of B); otherwise the plain crop is used."""
     crop = crop.convert("RGB")
     W, H = crop.size
     scale = min(1.0, max_side / max(W, H))
@@ -59,50 +102,80 @@ def segment_crop(crop: Image.Image, category_hint: str | None, max_side: int = 5
 
     counts = {int(k): int(v) for k, v in zip(*np.unique(seg, return_counts=True))}
     total = float(W * H)
-    wanted = CATEGORY_CLASSES.get(category_hint or "", set())
-    mask = np.isin(seg, list(wanted)) if wanted else np.zeros_like(seg, bool)
-    strategy = "category"
-    if mask.sum() < 0.05 * total:
-        # label didn't match what segformer sees (common for flat lays): use dominant clothing classes
+    info = {"classes": {SEG_LABELS[k]: round(v / total, 3) for k, v in counts.items() if v / total > 0.01}}
+    cat = category_hint or ""
+
+    cands: list[tuple[str, np.ndarray]] = []
+    wanted = CATEGORY_CLASSES.get(cat, set())
+    a = np.isin(seg, list(wanted)) if wanted else np.zeros_like(seg, bool)
+    cat_frac = a.sum() / total
+    if cat_frac < 0.05:
         clothing = {k: v for k, v in counts.items() if k in CLOTHING_CLASSES}
         if clothing:
             top_cls = max(clothing, key=clothing.get)
-            keep = {k for k, v in clothing.items() if v >= 0.25 * clothing[top_cls]}
-            mask = np.isin(seg, list(keep))
-            strategy = "dominant"
-    info = {"classes": {SEG_LABELS[k]: round(v / total, 3) for k, v in counts.items() if v / total > 0.01}}
-
-    frac = mask.sum() / total
-    if frac < 0.08:
-        info.update(strategy="fallback_crop", mask_frac=round(float(frac), 3))
+            # accessories: only trust segformer if it actually sees an accessory class (else it's the
+            # garment underneath, e.g. a clutch lying on a sweater)
+            if cat != "accessory" or top_cls in CATEGORY_CLASSES["accessory"]:
+                a = np.isin(seg, [k for k, v in clothing.items() if v >= 0.25 * clothing[top_cls]])
+                cands.append(("dominant", a))
+    else:
+        cands.append(("category", a))
+    # union of garment classes: segformer confuses garment classes on flat lays (trousers -> "Dress",
+    # flats -> "Upper-clothes"). Not for accessories; for shoes only when segformer sees no shoes at all
+    # (otherwise it would swallow the trouser legs of a worn outfit); bottoms never pull in upper-clothes.
+    if cat and cat != "accessory" and not (cat == "shoes" and cat_frac >= 0.05):
+        # bottoms: include "Upper-clothes" only as a small confusion region (not a jacket hanging over them)
+        drop_upper = cat == "bottom" and counts.get(4, 0) / total > 0.2
+        union_cls = (GARMENT_CLASSES - {4} if drop_upper else GARMENT_CLASSES) | wanted
+        cands.append(("garment_union", np.isin(seg, list(union_cls))))
+    levels = [cands]
+    # Dense flat lays: if other (smaller) items cover a big part of this box, any mask will either be a
+    # fragment or swallow the neighbours -> use the plain crop (honest, looks like a photo).
+    if exclude and inner:
+        occ = np.zeros(seg.shape, bool)
+        for (ex0, ey0, ex1, ey1) in exclude:
+            occ[max(0, ey0):max(0, ey1), max(0, ex0):max(0, ex1)] = True
+        x0, y0, x1, y1 = inner
+        overlap = float(occ[y0:y1, x0:x1].mean()) if (y1 > y0 and x1 > x0) else 0.0
+        info["overlap"] = round(overlap, 2)
+        if overlap > 0.3:
+            info.update(strategy="fallback_crop", reason="overlapping items")
+            return _plain(crop, info)
+    chosen = None
+    info["candidates"] = {}
+    for level in levels:
+        scored = []
+        for name, m in level:
+            if m.sum() < 0.05 * total:
+                continue
+            m = _clean(m)
+            ok, q = mask_quality(m, inner, category_hint)
+            scored.append((name, m, ok, q))
+            info["candidates"][name] = q | {"ok": bool(ok)}
+        good = [x for x in scored if x[2]]
+        if good:
+            chosen = good[0]
+            if len(good) > 1 and not good[0][0].startswith("garment_union"):
+                # prefer the union mask when the class mask misses a big part of the garment
+                if good[0][1].sum() < 0.92 * good[1][1].sum():
+                    chosen = good[1]
+            break
+    if chosen is None:
+        info.update(strategy="fallback_crop")
         return _plain(crop, info)
-
-    # clean: close small gaps, keep largest component (+ big secondary parts e.g. two shoes), fill holes
-    mask = ndimage.binary_closing(mask, structure=np.ones((5, 5)), iterations=2)
-    lab, n = ndimage.label(mask)
-    if n > 1:
-        sizes = ndimage.sum(mask, lab, range(1, n + 1))
-        biggest = sizes.max()
-        keep_ids = [i + 1 for i, s in enumerate(sizes) if s >= 0.3 * biggest]
-        mask = np.isin(lab, keep_ids)
-    mask = ndimage.binary_fill_holes(mask)
-    mask = ndimage.binary_opening(mask, structure=np.ones((3, 3)))
-    frac = mask.sum() / total
-    if frac < 0.08:
-        info.update(strategy="fallback_crop", mask_frac=round(float(frac), 3))
-        return _plain(crop, info)
+    strategy, mask, _, q = chosen
 
     alpha = Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(1.2))
     rgba = crop.copy()
     rgba.putalpha(alpha)
-    bbox = alpha.point(lambda a: 255 if a > 20 else 0).getbbox()
+    bbox = alpha.point(lambda v: 255 if v > 20 else 0).getbbox()
     if bbox:
         pad = int(0.03 * max(W, H))
         bbox = (max(0, bbox[0] - pad), max(0, bbox[1] - pad), min(W, bbox[2] + pad), min(H, bbox[3] + pad))
         rgba = rgba.crop(bbox)
     white = Image.new("RGB", rgba.size, (255, 255, 255))
     white.paste(rgba, mask=rgba.split()[3])
-    info.update(strategy=strategy, mask_frac=round(float(frac), 3))
+    info.update(strategy=strategy, mask_frac=round(float(mask.sum() / total), 3), mask_quality=q)
     return rgba, white, info
 
 
