@@ -100,7 +100,10 @@ def health():
 def _render_status() -> dict | None:
     try:
         from . import render
-        return render.gemini_status()
+        st = dict(render.gemini_status())
+        st["template_enabled"] = render.RENDER_TEMPLATE
+        st["priority"] = "gemini > template > cleanup"
+        return st
     except Exception:
         return None
 
@@ -151,13 +154,13 @@ def get_item(item_id: str):
 
 
 class RenderBody(BaseModel):
-    mode: str = "auto"   # auto (Gemini redraw if available + verified, else cleanup) | gemini | cleanup
+    mode: str = "auto"   # auto (Gemini redraw if available + verified, else template, else cleanup) | gemini | template | cleanup
     wait: bool = False   # true: render synchronously and return the finished item
 
 
 def _render_mode(mode: str) -> str:
-    if mode not in ("auto", "gemini", "cleanup"):
-        raise HTTPException(422, "mode must be auto, gemini or cleanup")
+    if mode not in ("auto", "gemini", "template", "cleanup"):
+        raise HTTPException(422, "mode must be auto, gemini, template or cleanup")
     return mode
 
 

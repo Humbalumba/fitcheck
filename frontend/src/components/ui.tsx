@@ -142,7 +142,7 @@ export function ItemImage({
           alt={alt ?? ""}
           loading="lazy"
           onError={() => setErr(true)}
-          className={cn("size-full object-contain", pad && "p-[8%]")}
+          className={cn("absolute inset-0 size-full object-contain", pad && "p-[8%]")}
         />
       ) : (
         <ImageOff className="size-6 text-black/20" />

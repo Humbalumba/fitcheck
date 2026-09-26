@@ -276,11 +276,13 @@ function ItemSheet({
   const methodLabel =
     item.clean_method === "gemini"
       ? "AI product render · verified"
-      : item.clean_method === "cleanup"
-        ? "Auto-cleaned photo"
-        : item.render_status === "failed"
-          ? "Couldn't polish this photo"
-          : null;
+      : item.clean_method === "template"
+        ? "Brand-style render · your colours & logos"
+        : item.clean_method === "cleanup"
+          ? "Auto-cleaned photo"
+          : item.render_status === "failed"
+            ? "Couldn't polish this photo"
+            : null;
 
   return (
     <Sheet

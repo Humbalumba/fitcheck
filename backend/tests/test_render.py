@@ -155,6 +155,34 @@ def test_verify_without_vision_call(monkeypatch):
     assert c["passed"] and c["gemini"]["skipped"]
 
 
+def test_verify_template_reference_rescues_canonical_relayout(monkeypatch):
+    """A catalog-pose re-layout scores low vs the crumpled cutout but high vs the template render; that passes only
+    when the vision QA actually ran and approved it."""
+    item = {"id": "x", "label": "navy tee", "attributes": {"pattern": "solid"}}
+    ref, _ = render.cleanup_render(_garment(0))
+    tmpl, _ = render.cleanup_render(_garment(1))
+    ref_px = np.asarray(_garment(0).convert("RGB"))[np.asarray(_garment(0))[..., 3] > 127]
+    monkeypatch.setattr(render, "clip_similarity", lambda a, b: 0.93 if b is tmpl else 0.60)
+    ok = {"same_garment": True, "has_text_or_logo": False, "text_matches": True, "color_matches": True,
+          "added_elements": False, "issues": [], "model": "mock"}
+    monkeypatch.setattr(render, "_gemini_verify_call", lambda o, r, i: dict(ok))
+    assert not render.verify_render(item, ref, ref, ref_px, None)["passed"]  # no template -> clip gate fails
+    c = render.verify_render(item, ref, ref, ref_px, None, alt_reference=tmpl)
+    assert c["passed"] and c["clip"]["via_template"] and c["clip"]["similarity_template"] == 0.93
+
+    def down(o, r, i):
+        raise render.RenderUnavailable("no verification model available")
+    monkeypatch.setattr(render, "_gemini_verify_call", down)
+    monkeypatch.setattr(render, "RENDER_VERIFY_GEMINI", "off")
+    c = render.verify_render(item, ref, ref, ref_px, None, alt_reference=tmpl)
+    assert not c["passed"]  # identity unverified -> don't trust a template-only CLIP pass
+    monkeypatch.setattr(render, "_gemini_verify_call", lambda o, r, i: dict(ok, same_garment=False, issues=["other"]))
+    assert not render.verify_render(item, ref, ref, ref_px, None, alt_reference=tmpl)["passed"]
+    monkeypatch.setattr(render, "_gemini_verify_call", lambda o, r, i: dict(ok))
+    monkeypatch.setattr(render, "clip_similarity", lambda a, b: 0.60)  # below both gates (cross-garment level)
+    assert not render.verify_render(item, ref, ref, ref_px, None, alt_reference=tmpl)["passed"]
+
+
 def test_classify_errors():
     assert render.classify_error(FakeQuotaError()) == "no_access"
 
@@ -173,14 +201,14 @@ def test_classify_errors():
 def test_quota_error_falls_back_to_cleanup_and_auto_disables(fresh_state, monkeypatch):
     calls = []
 
-    def boom(model, prompt, garment, context):
+    def boom(model, prompt, garment, context, pose_ref=None):
         calls.append(model)
         raise FakeQuotaError(model)
     monkeypatch.setattr(render, "_gemini_image_call", boom)
     it = _a_closet_item("top")
     try:
         rec = render.render_item(it["id"], "auto")
-        assert rec["status"] == "done" and rec["method"] == "cleanup" and rec["embed_source"] == "cutout"
+        assert rec["status"] == "done" and rec["method"] in ("template", "cleanup") and rec["embed_source"] == "cutout"
         assert len(calls) == render.RENDER_MAX_MODELS == 2  # tried the primary + ONE other model, then stopped
         att = rec["checks"]["gemini_render"]["attempts"]
         assert [a["error_kind"] for a in att] == ["no_access", "no_access"]
@@ -188,7 +216,7 @@ def test_quota_error_falls_back_to_cleanup_and_auto_disables(fresh_state, monkey
         assert st["disabled"] and "limit: 0" in st["last_error"]
         assert (fresh_state / "render_state.json").exists()  # persisted across restarts
         rec2 = render.render_item(it["id"], "auto")  # no further image calls once disabled
-        assert len(calls) == 2 and rec2["method"] == "cleanup"
+        assert len(calls) == 2 and rec2["method"] in ("template", "cleanup")
         assert rec2["checks"]["gemini_render"]["skipped"]
         render._state = None  # simulate a restart: persisted disable still honoured
         assert not render.gemini_render_available()
@@ -202,7 +230,7 @@ def test_gemini_render_verified_switches_embeddings_and_retry(fresh_state, monke
     before = db.get_embedding(it["id"], FCLIP_KIND)
     calls, verdicts = [], [False, True]  # first render rejected by QA, retry accepted
 
-    def fake_image(model, prompt, garment, context):
+    def fake_image(model, prompt, garment, context, pose_ref=None):
         calls.append(prompt)
         out, _ = render.cleanup_render(Image.open(it["cutout_path"]))  # a 'render' that matches the garment
         return out
@@ -237,7 +265,7 @@ def test_failed_verification_twice_falls_back(fresh_state, monkeypatch):
         "added_elements": False, "issues": ["wrong garment"], "model": "mock"})
     try:
         rec = render.render_item(it["id"], "auto")
-        assert rec["method"] == "cleanup" and rec["checks"]["fallback_reason"] == "verification failed"
+        assert rec["method"] in ("template", "cleanup") and rec["checks"]["fallback_reason"] == "verification failed"
         assert len(rec["checks"]["gemini_render"]["verifications"]) == 2
     finally:
         render.forget(it["id"])
@@ -317,10 +345,77 @@ def test_add_item_renders_in_background(client, monkeypatch):
         r = client.post("/api/closet/items", json={"item_ids": [iid]})
         assert r.status_code == 200
         j = client.get(f"/api/items/{iid}").json()
-        assert j["render_status"] == "done" and j["clean_method"] == "cleanup" and j["clean_image_url"]
+        assert j["render_status"] == "done" and j["clean_method"] in ("template", "cleanup") and j["clean_image_url"]
         clean_path = render.get_render(iid)["clean_path"]
     finally:
         client.delete(f"/api/closet/items/{iid}")
     assert render.get_render(iid) is None
     from pathlib import Path
     assert not Path(clean_path).exists()  # delete removes the clean image too
+
+
+def test_image_key_change_resets_auto_disable(fresh_state, monkeypatch):
+    """A separate GEMINI_IMAGE_API_KEY (e.g. billing-enabled) re-enables image generation automatically; only a hash
+    of the key is persisted."""
+    import json
+    from app import gemini
+    key = {"v": ("free-key-123", "main")}
+    monkeypatch.setattr(gemini, "image_api_key", lambda: key["v"])
+    assert render.gemini_render_available()
+    render._disable("image models not available on this API key (free tier limit: 0)", "429 limit: 0",
+                    time.time() + 3600)
+    render._model_blocked["gemini-3.1-flash-image"] = time.time() + 3600
+    assert not render.gemini_render_available()
+    raw = (fresh_state / "render_state.json").read_text()
+    assert "free-key-123" not in raw and json.loads(raw)["key_fp"] == gemini.key_fingerprint("free-key-123")
+    render._state = None  # restart: still disabled for the same key
+    assert not render.gemini_render_available()
+    key["v"] = ("billing-key-456", "image")  # user adds GEMINI_IMAGE_API_KEY to backend/.env
+    st = render.gemini_status()
+    assert not st["disabled"] and st["key_source"] == "image" and st["reason"] is None
+    assert render.gemini_render_available() and not render._model_blocked
+    raw = (fresh_state / "render_state.json").read_text()
+    assert "billing-key-456" not in raw and json.loads(raw)["previous_key"]["reason"]
+
+
+def test_legacy_state_without_fingerprint_is_not_reset(fresh_state, monkeypatch):
+    import json
+    from app import gemini
+    monkeypatch.setattr(gemini, "image_api_key", lambda: ("free-key-123", "main"))
+    (fresh_state / "render_state.json").write_text(json.dumps(
+        {"disabled_until": time.time() + 3600, "reason": "image models not available on this API key"}))
+    render._state = None
+    assert not render.gemini_render_available()  # adopts the current key; no wasted 429s
+    assert json.loads((fresh_state / "render_state.json").read_text())["key_fp"]
+
+
+def test_image_api_key_prefers_separate_key(monkeypatch, tmp_path):
+    from app import gemini
+    monkeypatch.delenv("FITCHECK_GEMINI_OFF", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "main-key")
+    monkeypatch.delenv("GEMINI_IMAGE_API_KEY", raising=False)
+    monkeypatch.setattr(gemini, "_key_from_dotenv", lambda names=None: None)
+    assert gemini.image_api_key() == ("main-key", "main")
+    monkeypatch.setenv("GEMINI_IMAGE_API_KEY", "img-key")
+    assert gemini.image_api_key() == ("img-key", "image")
+    monkeypatch.setenv("FITCHECK_GEMINI_OFF", "1")
+    assert gemini.image_api_key() == (None, "none")
+
+
+def test_gemini_gets_pose_reference_and_v2_prompt(fresh_state, monkeypatch):
+    it = _a_closet_item("top")
+    seen = {}
+
+    def fake_image(model, prompt, garment, context, pose_ref=None):
+        seen["prompt"], seen["pose_ref"] = prompt, pose_ref
+        raise FakeQuotaError(model)
+    monkeypatch.setattr(render, "_gemini_image_call", fake_image)
+    try:
+        rec = render.render_item(it["id"], "auto")
+        assert "WHAT WE KNOW ABOUT THIS GARMENT" in seen["prompt"] and "PURE WHITE" in seen["prompt"]
+        if rec["checks"].get("template", {}).get("template"):
+            assert seen["pose_ref"] is not None and "SCHEMATIC" in seen["prompt"]
+        else:
+            assert seen["pose_ref"] is None and "SCHEMATIC" not in seen["prompt"]
+    finally:
+        render.forget(it["id"])

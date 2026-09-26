@@ -63,9 +63,16 @@ RENDER_VERIFY_GEMINI = os.environ.get("RENDER_VERIFY_GEMINI", "always").strip().
 # median 0.875; same-category DIFFERENT items p95 0.66, p99 0.72, max 0.81. So clip is a coarse gate (wrong
 # item type / garbage); identity + logo/text fidelity is the Gemini vision check's job.
 RENDER_CLIP_MIN = float(os.environ.get("RENDER_CLIP_MIN", "0.75"))
+# CLIP gate vs the canonical template render (catalog re-layout of the same garment). Measured on the live closet:
+# same garment 0.66-0.93, different garments <= 0.63; only used together with a passing vision QA + colour check.
+RENDER_CLIP_MIN_TEMPLATE = float(os.environ.get("RENDER_CLIP_MIN_TEMPLATE", "0.65"))
 # Lightness-discounted LAB distance of dominant colours: same item max 8.8, different items median 26.8.
 RENDER_COLOR_MAX_DE = float(os.environ.get("RENDER_COLOR_MAX_DE", "15"))
 RENDER_SIZE = int(os.environ.get("RENDER_SIZE", "1024"))
+# canonical template renderer (app/render_template.py): used when Gemini image generation is unavailable/unverified
+RENDER_TEMPLATE = os.environ.get("RENDER_TEMPLATE", "1") != "0"
+# send the template render to the image model as a target-pose schematic (image 3)
+RENDER_POSE_REF = os.environ.get("RENDER_POSE_REF", "1") != "0"
 RENDER_PAD_FRAC = float(os.environ.get("RENDER_PAD_FRAC", "0.08"))
 RENDER_SHADOW = os.environ.get("RENDER_SHADOW", "1") != "0"
 RENDER_MAX_TILT = float(os.environ.get("RENDER_MAX_TILT", "30"))
@@ -179,6 +186,8 @@ def forget(item_id: str) -> None:
             _all_records().pop(item_id, None)
             with db.get_conn() as c:
                 c.execute("DELETE FROM item_renders WHERE item_id=?", (item_id,))
+        from .render_template import forget_details
+        forget_details(item_id)
     except Exception as e:
         log.warning("render cleanup for %s failed: %s", item_id, e)
 
@@ -635,7 +644,7 @@ class RenderUnavailable(RuntimeError):
     pass
 
 
-_state_lock = threading.Lock()
+_state_lock = threading.RLock()
 _state: dict | None = None
 _model_blocked: dict[str, float] = {}
 
@@ -665,11 +674,45 @@ def _next_quota_reset() -> float:
     return reset.timestamp()
 
 
+def _image_key_info() -> tuple[str | None, str]:
+    """(fingerprint, source) of the key used for image generation; never the key itself."""
+    try:
+        from . import gemini
+        key, src = gemini.image_api_key()
+        return gemini.key_fingerprint(key), src
+    except Exception:
+        return None, "none"
+
+
+def _sync_key_state() -> dict:
+    """Auto-disable is per key: when the image key changes (e.g. a billing-enabled GEMINI_IMAGE_API_KEY is added)
+    the persisted disable + per-model blocks reset automatically. A state written before fingerprints existed adopts
+    the current key without resetting (so the old free key doesn't burn two more 429s)."""
+    fp, src = _image_key_info()
+    with _state_lock:
+        st = _load_state()
+        if "key_fp" not in st:
+            st["key_fp"] = fp
+            _save_state()
+        elif fp != st.get("key_fp"):
+            prev = {k: st.get(k) for k in ("key_fp", "disabled_until", "reason", "disabled_at")}
+            for k in ("disabled_until", "reason", "error", "disabled_at", "working_model"):
+                st.pop(k, None)
+            st["key_fp"] = fp
+            st["previous_key"] = prev
+            st["key_changed_at"] = db.now_iso()
+            _model_blocked.clear()
+            _save_state()
+            log.info("Gemini image key changed (source=%s): render auto-disable reset", src)
+    return dict(st, _key_source=src)
+
+
 def gemini_status() -> dict:
-    st = _load_state()
+    st = _sync_key_state()
     until = float(st.get("disabled_until") or 0)
     return {"mode": RENDER_GEMINI, "model": RENDER_MODEL, "fallbacks": RENDER_FALLBACK_MODELS,
-            "configured": _gemini_configured(),
+            "configured": _gemini_configured(), "key_source": st.get("_key_source"),
+            "key_fingerprint": st.get("key_fp"),
             "disabled": RENDER_GEMINI == "off" or (RENDER_GEMINI == "auto" and time.time() < until),
             "disabled_until": until or None, "reason": st.get("reason"), "last_error": st.get("error"),
             "working_model": st.get("working_model")}
@@ -678,7 +721,7 @@ def gemini_status() -> dict:
 def _gemini_configured() -> bool:
     try:
         from . import gemini
-        return gemini.is_configured()
+        return gemini.image_api_key()[0] is not None
     except Exception:
         return False
 
@@ -686,7 +729,7 @@ def _gemini_configured() -> bool:
 def gemini_render_available() -> bool:
     if RENDER_GEMINI == "off" or not _gemini_configured():
         return False
-    st = _load_state()
+    st = _sync_key_state()
     if RENDER_GEMINI == "auto" and time.time() < float(st.get("disabled_until") or 0):
         return False
     return any(time.time() >= _model_blocked.get(m, 0) for m in _image_models())
@@ -700,7 +743,7 @@ def _disable(reason: str, err: str, until: float) -> None:
     with _state_lock:
         st = _load_state()
         st.update(disabled_until=until, reason=reason, error=err[:600],
-                  disabled_at=db.now_iso())
+                  disabled_at=db.now_iso(), key_fp=_image_key_info()[0])
         _save_state()
     log.warning("Gemini image rendering auto-disabled until %s (%s): %s",
                 _dt.datetime.fromtimestamp(until).isoformat(timespec="minutes"), reason, err[:200])
@@ -776,6 +819,19 @@ def _desc(item: dict) -> str:
     return bits[0] + (" (" + "; ".join(extra) + ")" if extra else "")
 
 
+def render_prompt_for(item: dict, pose_ref: bool = False) -> str:
+    """Attribute-driven canonical-pose prompt (app/render_prompt.py) from the item's attributes + garment details."""
+    try:
+        from .render_prompt import build_render_prompt
+        from .render_template import get_details
+        details, _frame = get_details(item)
+        return build_render_prompt(item, details, pose_ref=pose_ref)
+    except Exception as e:  # never block a render on prompt building
+        log.warning("v2 prompt failed (%s); using the basic prompt", e)
+        cat = (item.get("category") or (item.get("attributes") or {}).get("category") or "").lower()
+        return RENDER_PROMPT.format(desc=_desc(item), style=_STYLE_BY_CAT.get(cat, "ghost-mannequin or neat flat-lay"))
+
+
 def _img_part(img: Image.Image, max_side: int = 1024):
     from google.genai import types
     im = img.convert("RGB")
@@ -785,18 +841,22 @@ def _img_part(img: Image.Image, max_side: int = 1024):
     return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
 
-def _gemini_image_call(model: str, prompt: str, garment: Image.Image, context: Image.Image | None) -> Image.Image:
-    """ONE generate_content call on an image model. Returns the generated PIL image (raises on anything else)."""
+def _gemini_image_call(model: str, prompt: str, garment: Image.Image, context: Image.Image | None,
+                       pose_ref: Image.Image | None = None) -> Image.Image:
+    """ONE generate_content call on an image model. Returns the generated PIL image (raises on anything else).
+    Images: 1 = garment cutout, 2 = photo context (optional), 3 = canonical pose schematic (optional)."""
     from google.genai import types
     from . import gemini
     contents = [prompt, _img_part(garment)] + ([_img_part(context)] if context is not None else [])
+    if pose_ref is not None:
+        contents.append(_img_part(pose_ref, max_side=768))
     kw = dict(response_modalities=["IMAGE"])
     try:
         kw["image_config"] = types.ImageConfig(aspect_ratio="1:1")
     except Exception:
         pass
-    resp = gemini.client().models.generate_content(model=model, contents=contents,
-                                                   config=types.GenerateContentConfig(**kw))
+    resp = gemini.image_client().models.generate_content(model=model, contents=contents,
+                                                         config=types.GenerateContentConfig(**kw))
     texts = []
     for cand in getattr(resp, "candidates", None) or []:
         content = getattr(cand, "content", None)
@@ -818,10 +878,15 @@ class RenderVerdict(BaseModel):
     same_garment: bool = Field(description="image 2 depicts the same physical garment as image 1")
     has_text_or_logo: bool = Field(description="image 1 shows any logo, printed text, lettering or graphic")
     text_matches: bool = Field(description="all logos/text/graphics of image 1 appear in image 2 with the same "
-                                           "spelling, style, size and position (true if image 1 has none)")
+                                           "spelling, SHAPES, style, size and position on the garment (false if a "
+                                           "symbol was redrawn as a different symbol/letter; true if image 1 has none)")
     color_matches: bool = Field(description="same colour and shade (allowing for studio lighting)")
     added_elements: bool = Field(description="image 2 adds something not in image 1: new logo/text, person, hanger, "
                                              "props, different details")
+    catalog_pose_ok: Optional[bool] = Field(default=None, description="image 2 is a clean catalogue shot: garment "
+                                            "upright (collar/waistband at top), symmetric, pressed, complete (both "
+                                            "sleeves / both legs, hood and closure shown if it has them), plain "
+                                            "white background")
     issues: list[str] = Field(description="short, concrete differences to fix; empty if none")
 
 
@@ -829,6 +894,8 @@ VERIFY_PROMPT = """You are a strict QA checker for a closet app. Image 1 is a cu
 be wrinkled, folded or partly hidden; other items may be visible: only consider the main garment{hint}).
 Image 2 is an AI-generated product photo that must depict EXACTLY the same garment, cleaned up.
 Parts hidden in image 1 may be completed plausibly in image 2: do not penalise that. Wrinkles removed is expected.
+Image 2 shows the garment rotated upright and laid out symmetrically: judge logo/graphic orientation RELATIVE TO THE
+GARMENT (collar up), not relative to the photo frame.
 Compare: colour/shade, pattern, fabric, every logo and printed text (exact spelling), graphics and their size and
 position, buttons, zippers, pockets, collar/hood, neckline, sleeve length, hem length, cut/silhouette.
 Return JSON only."""
@@ -845,7 +912,7 @@ def _gemini_verify_call(original: Image.Image, render: Image.Image, item: dict) 
         if time.time() < _model_blocked.get(m, 0):
             continue
         try:
-            resp = gemini.client().models.generate_content(
+            resp = gemini.image_client().models.generate_content(  # billing image key if set, else main key
                 model=m, contents=[prompt, _img_part(original), _img_part(render)],
                 config=types.GenerateContentConfig(response_mime_type="application/json",
                                                    response_schema=RenderVerdict, temperature=0.0))
@@ -866,18 +933,35 @@ def _gemini_verify_call(original: Image.Image, render: Image.Image, item: dict) 
 
 
 def verify_render(item: dict, render: Image.Image, reference: Image.Image, ref_pixels: np.ndarray,
-                  photo: Image.Image | None) -> dict:
-    """Checks (a) clip cosine, (b) dominant colour, (c) Gemini vision compare. Returns {passed, issues, ...}."""
+                  photo: Image.Image | None, alt_reference: Image.Image | None = None) -> dict:
+    """Checks (a) clip cosine, (b) dominant colour, (c) Gemini vision compare. Returns {passed, issues, ...}.
+
+    alt_reference: the canonical template render (same garment re-laid flat, true colours + logo). A catalog-pose
+    re-layout legitimately scores lower against the crumpled cleanup cutout, so the CLIP gate takes the better of the
+    two similarities. When only the template similarity clears the bar, the Gemini vision check must actually have
+    run and passed (identity is then vouched for by the vision QA + colour check, not by CLIP alone)."""
     checks: dict = {"issues": []}
     try:
         sim = clip_similarity(render, reference)
     except Exception as e:
         sim = None
         checks["issues"].append(f"clip check failed: {type(e).__name__}")
-    checks["clip"] = {"similarity": None if sim is None else round(sim, 4), "threshold": RENDER_CLIP_MIN,
-                      "passed": bool(sim is not None and sim >= RENDER_CLIP_MIN)}
-    if not checks["clip"]["passed"] and sim is not None:
-        checks["issues"].append(f"overall look differs from the photo (similarity {sim:.2f})")
+    sim_alt = None
+    if alt_reference is not None:
+        try:
+            sim_alt = clip_similarity(render, alt_reference)
+        except Exception:
+            sim_alt = None
+    direct_ok = bool(sim is not None and sim >= RENDER_CLIP_MIN)
+    via_alt = bool(not direct_ok and sim_alt is not None and sim_alt >= RENDER_CLIP_MIN_TEMPLATE)
+    checks["clip"] = {"similarity": None if sim is None else round(sim, 4),
+                      "similarity_template": None if sim_alt is None else round(sim_alt, 4),
+                      "via_template": via_alt, "threshold": RENDER_CLIP_MIN,
+                      "threshold_template": RENDER_CLIP_MIN_TEMPLATE if alt_reference is not None else None,
+                      "passed": bool(direct_ok or via_alt)}
+    if not checks["clip"]["passed"] and (sim is not None or sim_alt is not None):
+        best = max(x for x in (sim, sim_alt) if x is not None)
+        checks["issues"].append(f"overall look differs from the photo (similarity {best:.2f})")
     try:
         checks["color"] = color_check(ref_pixels, render)
     except Exception as e:
@@ -886,19 +970,20 @@ def verify_render(item: dict, render: Image.Image, reference: Image.Image, ref_p
         checks["issues"].append("garment colour/shade differs from the photo; keep the exact original colour")
     txt = text_suspected(item)
     checks["text_expected"] = txt
-    want_llm = RENDER_VERIFY_GEMINI == "always" or (RENDER_VERIFY_GEMINI == "text" and txt)
+    want_llm = RENDER_VERIFY_GEMINI == "always" or (RENDER_VERIFY_GEMINI == "text" and txt) or via_alt
     llm_ok = True
     if want_llm:
         try:
             v = _gemini_verify_call(photo if photo is not None else reference, render, item)
             checks["gemini"] = v
             llm_ok = bool(v["same_garment"] and not v["added_elements"]
-                          and (not v["has_text_or_logo"] or v["text_matches"]) and v["color_matches"])
+                          and (not v["has_text_or_logo"] or v["text_matches"]) and v["color_matches"]
+                          and v.get("catalog_pose_ok") is not False)
             if not llm_ok:
                 checks["issues"] += [str(i) for i in (v.get("issues") or [])][:6] or ["QA model rejected the render"]
         except Exception as e:
             checks["gemini"] = {"skipped": True, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
-            if txt:  # can't verify logos/text without the vision check -> don't trust the render
+            if txt or via_alt:  # can't verify logos/text (or identity) without the vision check -> don't trust it
                 llm_ok = False
                 checks["issues"].append("could not verify logo/text fidelity")
     else:
@@ -911,7 +996,8 @@ NO_ACCESS_DISABLE_S = float(os.environ.get("RENDER_NO_ACCESS_DISABLE_H", "72")) 
 
 
 def _generate_once(prompt: str, garment: Image.Image, context: Image.Image | None, rec: dict,
-                   only_model: str | None = None) -> tuple[Image.Image | None, str | None]:
+                   only_model: str | None = None, pose_ref: Image.Image | None = None
+                   ) -> tuple[Image.Image | None, str | None]:
     """Try image models in order (at most RENDER_MAX_MODELS). Quota/permission errors block that model and move on;
     anything else stops Gemini for this item. When every tried model failed on quota/permission, image generation is
     auto-disabled (persisted) so we stop spending calls."""
@@ -924,7 +1010,8 @@ def _generate_once(prompt: str, garment: Image.Image, context: Image.Image | Non
         tried += 1
         t0 = time.time()
         try:
-            img = _gemini_image_call(m, prompt, garment, context)
+            img = (_gemini_image_call(m, prompt, garment, context, pose_ref) if pose_ref is not None
+                   else _gemini_image_call(m, prompt, garment, context))
         except Exception as e:
             kind = "no_image" if isinstance(e, RenderUnavailable) else classify_error(e)
             err = f"{type(e).__name__}: {str(e)[:400]}"
@@ -955,18 +1042,20 @@ def _generate_once(prompt: str, garment: Image.Image, context: Image.Image | Non
 
 
 def _try_gemini(item: dict, cutout_white: Image.Image, crop: Image.Image | None, reference: Image.Image,
-                ref_pixels: np.ndarray) -> tuple[Image.Image | None, dict]:
+                ref_pixels: np.ndarray, pose_ref: Image.Image | None = None) -> tuple[Image.Image | None, dict]:
     """Render + verify; at most one retry (same model) with the verification issues appended.
+    pose_ref: the canonical template render (target pose/layout schematic), if the item has a template.
     Returns (verified, normalized render | None, record)."""
     rec: dict = {"attempts": [], "verifications": []}
-    cat = (item.get("category") or (item.get("attributes") or {}).get("category") or "").lower()
-    base_prompt = RENDER_PROMPT.format(desc=_desc(item), style=_STYLE_BY_CAT.get(cat, "ghost-mannequin or neat flat-lay"))
-    img, model = _generate_once(base_prompt, cutout_white, crop, rec)
+    base_prompt = render_prompt_for(item, pose_ref=pose_ref is not None)
+    rec["prompt_chars"] = len(base_prompt)
+    rec["pose_reference"] = pose_ref is not None
+    img, model = _generate_once(base_prompt, cutout_white, crop, rec, pose_ref=pose_ref)
     for attempt in range(2):
         if img is None:
             break
         norm = normalize_render(img)
-        checks = verify_render(item, norm, reference, ref_pixels, crop)
+        checks = verify_render(item, norm, reference, ref_pixels, crop, alt_reference=pose_ref)
         checks["model"] = model
         rec["verifications"].append(checks)
         if checks["passed"]:
@@ -976,7 +1065,7 @@ def _try_gemini(item: dict, cutout_white: Image.Image, crop: Image.Image | None,
             break
         issues = checks["issues"] or ["render did not match the original garment"]
         prompt = base_prompt + "\n\nA previous attempt had these problems, FIX them:\n- " + "\n- ".join(issues)
-        img, _ = _generate_once(prompt, cutout_white, crop, rec, only_model=model)
+        img, _ = _generate_once(prompt, cutout_white, crop, rec, only_model=model, pose_ref=pose_ref)
     return None, rec
 
 
@@ -1018,7 +1107,9 @@ def _refresh_embeddings(item_id: str) -> bool:
 
 
 def render_item(item_id: str, mode: str = "auto") -> dict | None:
-    """Produce + store the clean image synchronously. mode: auto | gemini | cleanup. Returns the render record."""
+    """Produce + store the clean image synchronously. mode: auto | gemini | template | cleanup.
+    Priority (auto): Gemini redraw (if available & verified) > canonical template > deterministic cleanup.
+    Returns the render record."""
     it = db.get_item(item_id)
     if it is None:
         return None
@@ -1035,13 +1126,24 @@ def render_item(item_id: str, mode: str = "auto") -> dict | None:
         clean, info = cleanup_from_mask(rgb, fg, pinfo)
         method, model, checks = "cleanup", None, {"method": "cleanup", "cleanup": info}
         final = clean
+        # canonical brand-style template (no image generation): the fallback, and the pose schematic for Gemini
+        timg = None
+        if mode in ("auto", "gemini", "template") and RENDER_TEMPLATE:
+            try:
+                from . import render_template as _rt
+                timg, tinfo = _rt.render_template(it, rgb, fg, crop)
+            except Exception as e:
+                log.exception("template render crashed")
+                timg, tinfo = None, {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+            checks["template"] = tinfo
         if mode in ("auto", "gemini"):
             if gemini_render_available():
                 cutout_white = Image.new("RGB", cutout.size, (255, 255, 255))
                 cm = cutout.convert("RGBA")
                 cutout_white.paste(cm, mask=cm.split()[3])
                 try:
-                    g, rec = _try_gemini(it, cutout_white, crop, clean, ref_pixels)
+                    g, rec = _try_gemini(it, cutout_white, crop, clean, ref_pixels,
+                                         pose_ref=timg if RENDER_POSE_REF else None)
                 except Exception as e:
                     log.exception("gemini render crashed")
                     g, rec = None, {"error": f"{type(e).__name__}: {str(e)[:200]}"}
@@ -1059,6 +1161,9 @@ def render_item(item_id: str, mode: str = "auto") -> dict | None:
                                            "reason": st.get("reason") or ("disabled" if st["disabled"] else
                                                                           "gemini not configured" if not st["configured"]
                                                                           else "unavailable")}
+        if method == "cleanup" and timg is not None:
+            final, method = timg, "template"
+            checks["method"] = "template"
         if method == "cleanup":
             try:  # informational sanity check (the cleanup never invents pixels)
                 white = _open(it.get("white_path")) or cutout.convert("RGB")

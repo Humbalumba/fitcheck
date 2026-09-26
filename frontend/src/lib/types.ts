@@ -58,7 +58,7 @@ export interface Item {
   crop_url?: string | null; // original photo crop
   original_image_url?: string | null; // cutout on white (before the clean render)
   clean_image_url?: string | null; // clean product image (app/render.py), null until ready
-  clean_method?: "gemini" | "cleanup" | null; // Gemini redraw (verified) | deterministic cleanup
+  clean_method?: "gemini" | "template" | "cleanup" | null; // Gemini redraw (verified) | canonical template | cleanup
   render_status?: "pending" | "done" | "failed" | null;
   render_checks?: Record<string, unknown> | null;
   attributes: Attributes;

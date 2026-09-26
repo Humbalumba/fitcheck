@@ -38,6 +38,9 @@ class Category(str, Enum):
     top = "top"; bottom = "bottom"; dress = "dress"; outerwear = "outerwear"; shoes = "shoes"; accessory = "accessory"
 
 
+from .garment_schema import GarmentDetails  # noqa: E402
+
+
 class Gender(str, Enum):
     mens = "mens"; womens = "womens"; unisex = "unisex"
 
@@ -82,7 +85,7 @@ _model_name: str | None = None
 _lock = threading.Lock()
 
 
-def _key_from_dotenv() -> str | None:
+def _key_from_dotenv(names: tuple[str, ...] = ("GEMINI_API_KEY=", "GOOGLE_API_KEY=")) -> str | None:
     """Allow dropping GEMINI_API_KEY into backend/.env or fitcheck/.env without restarting the server."""
     for p in (config.BACKEND_DIR / ".env", config.BACKEND_DIR.parent / ".env"):
         try:
@@ -90,7 +93,7 @@ def _key_from_dotenv() -> str | None:
                 line = line.strip()
                 if line.startswith("export "):
                     line = line[7:]
-                if line.startswith(("GEMINI_API_KEY=", "GOOGLE_API_KEY=")):
+                if line.startswith(names):
                     v = line.split("=", 1)[1].strip().strip('"').strip("'")
                     if v:
                         return v
@@ -108,6 +111,49 @@ def api_key() -> str | None:
 
 def is_configured() -> bool:
     return api_key() is not None
+
+
+def image_api_key() -> tuple[str | None, str]:
+    """(key, source) for image generation (render option 1): GEMINI_IMAGE_API_KEY (env or backend/.env) -- e.g. a
+    billing-enabled key -- else the main key. source is 'image' | 'main' | 'none'. Never logged."""
+    if os.environ.get("FITCHECK_GEMINI_OFF") == "1":
+        return None, "none"
+    k = os.environ.get("GEMINI_IMAGE_API_KEY") or _key_from_dotenv(("GEMINI_IMAGE_API_KEY=",))
+    if k and k.strip():
+        return k.strip(), "image"
+    k = api_key()
+    return (k, "main") if k else (None, "none")
+
+
+def key_fingerprint(key: str | None) -> str | None:
+    """Short sha256 prefix identifying a key (safe to persist / show; the key itself never is)."""
+    if not key:
+        return None
+    import hashlib
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+_image_client = None
+_image_client_fp = None
+
+
+def image_client():
+    """google-genai client for image generation (separate key if GEMINI_IMAGE_API_KEY is set)."""
+    global _image_client, _image_client_fp
+    key, src = image_api_key()
+    if key is None:
+        raise RuntimeError("no Gemini key configured for image generation")
+    if src == "main":
+        return client()
+    with _lock:
+        fp = key_fingerprint(key)
+        if _image_client is None or fp != _image_client_fp:
+            from google import genai
+            from google.genai import types
+            _image_client = genai.Client(api_key=key,
+                                         http_options=types.HttpOptions(timeout=int(config.GEMINI_TIMEOUT_S * 1000)))
+            _image_client_fp = fp
+        return _image_client
 
 
 _client_key_hash = None
@@ -349,6 +395,9 @@ def identify(cutout_white: Image.Image, context: Image.Image, label: str) -> dic
 class DetectedItem(Attributes):
     box_2d: list[int] = Field(description="[ymin, xmin, ymax, xmax] normalized to 0-1000, tight around the garment")
     label: str = Field(description="short label, color + type, e.g. 'navy hooded zip jacket'")
+    details: Optional[GarmentDetails] = Field(
+        default=None, description="construction details for the product-image renderer; graphics box_2d are "
+                                  "normalised 0-1000 relative to the WHOLE photo")
 
 
 class DetectedItems(BaseModel):
@@ -361,7 +410,12 @@ formality 1-5, seasons, 3-6 style tags, gender presentation, brand only if a log
 price+currency ONLY if a price tag attached to that item is clearly readable, else null, one-line description,
 estimated_price_usd = typical new US retail price for that brand + type + material (typical mid-market price for the
 type if the brand is unknown), price_confidence = high only if the brand is clearly identified, else medium or low).
-Jackets, blazers, coats, cardigans and vests are category "outerwear", never "top"."""
+Jackets, blazers, coats, cardigans and vests are category "outerwear", never "top".
+Also fill "details" for each garment: garment_type, which side faces the camera (front/back), sleeve length, neckline,
+closure, hood, front pockets, ribbed cuffs/hem, fit, length, hood-lining / hardware / contrast-stitch colours, and
+EVERY logo / printed or embroidered text / graphic / brand patch on it (tight box_2d relative to the whole photo, exact
+text, position on the garment from the wearer's point of view, clockwise degrees to make it upright). Never invent
+logos."""
 
 
 def detect_items(img: Image.Image) -> list[dict]:
