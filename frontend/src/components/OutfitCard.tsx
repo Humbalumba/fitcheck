@@ -1,11 +1,21 @@
 "use client";
 
+import { Maximize2 } from "lucide-react";
 import type { Item, Outfit } from "@/lib/types";
 import { categoryKey } from "@/lib/constants";
 import { cn, pct } from "@/lib/format";
 import { ItemImage } from "./ui";
 
-export function OutfitCard({ outfit, candidateId }: { outfit: Outfit; candidateId?: string }) {
+export function OutfitCard({
+  outfit,
+  candidateId,
+  onOpen,
+}: {
+  outfit: Outfit;
+  candidateId?: string;
+  /** When set, the card is clickable (and keyboard-activatable) and calls this to open the zoomed view. */
+  onOpen?: () => void;
+}) {
   const main: Item[] = [];
   const side: Item[] = [];
   const order = (i: Item) => ["top", "dress", "bottom"].indexOf(categoryKey(i.category ?? i.attributes?.category));
@@ -20,7 +30,32 @@ export function OutfitCard({ outfit, candidateId }: { outfit: Outfit; candidateI
   const tone = score >= 0.75 ? "bg-emerald-500" : score >= 0.55 ? "bg-lime-500" : "bg-amber-500";
 
   return (
-    <div className="rounded-3xl bg-white border border-black/5 p-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+    <div
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      aria-label={onOpen ? `View outfit larger (${pct(score)} compatibility)` : undefined}
+      onClick={onOpen}
+      onKeyDown={
+        onOpen
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpen();
+              }
+            }
+          : undefined
+      }
+      className={cn(
+        "group relative rounded-3xl bg-white border border-black/5 p-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)]",
+        onOpen &&
+          "cursor-pointer select-none transition duration-200 hover:-translate-y-0.5 hover:border-black/10 hover:shadow-[0_8px_24px_rgba(0,0,0,0.08)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
+      )}
+    >
+      {onOpen && (
+        <span className="pointer-events-none absolute top-3.5 right-3.5 z-10 grid place-items-center size-7 rounded-full bg-white/90 text-black/60 shadow-sm ring-1 ring-black/5 opacity-0 scale-90 transition group-hover:opacity-100 group-hover:scale-100 group-focus-visible:opacity-100 group-focus-visible:scale-100">
+          <Maximize2 className="size-3.5" />
+        </span>
+      )}
       <div className={cn("grid gap-1.5", side.length ? "grid-cols-[1.6fr_1fr]" : "grid-cols-1")}>
         <div className="flex flex-col gap-1.5">
           {main.map((it) => (

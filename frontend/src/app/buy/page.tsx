@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -27,6 +27,7 @@ import { FilePicker } from "@/components/FilePicker";
 import { PhotoWithBoxes, boxColor } from "@/components/PhotoWithBoxes";
 import { AttributeEditor, AttributeSummary, diffAttributes } from "@/components/AttributeEditor";
 import { OutfitCard } from "@/components/OutfitCard";
+import { OutfitModal } from "@/components/OutfitModal";
 import { useToast } from "@/components/Toast";
 
 type Step = "start" | "detecting" | "select" | "evaluating" | "result";
@@ -398,6 +399,20 @@ function ResultView({
     return names.map((t) => ({ t, list: m.get(t) ?? [], count: r.outfit_count_by_template?.[t] ?? m.get(t)?.length ?? 0 }));
   }, [r]);
 
+  // Flat list (in on-screen order) so the zoom modal can step through every outfit.
+  const flat = useMemo(() => groups.flatMap((g) => g.list), [groups]);
+  const offsets = useMemo(() => {
+    const o: Record<string, number> = {};
+    let acc = 0;
+    for (const g of groups) {
+      o[g.t] = acc;
+      acc += g.list.length;
+    }
+    return o;
+  }, [groups]);
+  const [zoom, setZoom] = useState<number | null>(null);
+  const closeZoom = useCallback(() => setZoom(null), []);
+
   return (
     <div className="space-y-4">
       <button onClick={onBack} className="inline-flex items-center gap-1 text-sm font-semibold text-black/55 -mt-1">
@@ -497,7 +512,14 @@ function ResultView({
             {groups
               .filter((g) => g.count > 0 || g.list.length > 0)
               .map((g) => (
-                <OutfitGroup key={g.t} template={g.t} list={g.list} count={g.count} candidateId={item?.id} />
+                <OutfitGroup
+                  key={g.t}
+                  template={g.t}
+                  list={g.list}
+                  count={g.count}
+                  candidateId={item?.id}
+                  onOpen={(i) => setZoom(offsets[g.t] + i)}
+                />
               ))}
             {r.outfits_truncated && (
               <p className="text-xs text-center text-black/45">Showing the top-scoring outfits for each combination.</p>
@@ -505,6 +527,8 @@ function ResultView({
           </div>
         )}
       </div>
+
+      <OutfitModal outfits={flat} index={zoom} candidateId={item?.id} onIndex={setZoom} onClose={closeZoom} />
 
       {/* Actions */}
       <div className="sticky bottom-20 z-10 pt-2">
@@ -612,11 +636,13 @@ function OutfitGroup({
   list,
   count,
   candidateId,
+  onOpen,
 }: {
   template: string;
   list: EvaluateResponse["outfits"];
   count: number;
   candidateId?: string;
+  onOpen?: (index: number) => void;
 }) {
   const [all, setAll] = useState(false);
   const shown = all ? list : list.slice(0, 4);
@@ -632,7 +658,7 @@ function OutfitGroup({
       ) : (
         <div className={cn("grid gap-2.5", isDress ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3")}>
           {shown.map((o, i) => (
-            <OutfitCard key={i} outfit={o} candidateId={candidateId} />
+            <OutfitCard key={i} outfit={o} candidateId={candidateId} onOpen={onOpen ? () => onOpen(i) : undefined} />
           ))}
         </div>
       )}
