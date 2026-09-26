@@ -171,7 +171,19 @@ export default function SettingsPage() {
       </Card>
 
       <Card className="p-5 space-y-5" data-testid="matching-card">
-        <div className="space-y-5" data-testid="match-picker">
+        <div className="space-y-5" data-testid="dupe-picker">
+        <SectionTitle icon={<Copy className="size-4" />} title="How careful about stuff you already own?" />
+        <PresetPicker
+          label="Duplicate check"
+          presets={DUPE_PRESETS}
+          active={nearestDupe(s.redundancy_duplicate_threshold, s.redundancy_similar_threshold)}
+          onPick={(p) =>
+            setS((x) => (x ? { ...x, redundancy_duplicate_threshold: p.dup, redundancy_similar_threshold: p.similar } : x))
+          }
+        />
+        </div>
+
+        <div className="space-y-5 border-t border-black/[0.07] pt-5" data-testid="match-picker">
         <SectionTitle icon={<Sparkles className="size-4" />} title="How picky should outfit matching be?" />
         <PresetPicker
           label="Outfit matching"
@@ -195,18 +207,6 @@ export default function SettingsPage() {
             onChange={(v) => set("match_gender_presentation", v)}
           />
         )}
-        </div>
-
-        <div className="space-y-5 border-t border-black/[0.07] pt-5" data-testid="dupe-picker">
-        <SectionTitle icon={<Copy className="size-4" />} title="How careful about stuff you already own?" />
-        <PresetPicker
-          label="Duplicate check"
-          presets={DUPE_PRESETS}
-          active={nearestDupe(s.redundancy_duplicate_threshold, s.redundancy_similar_threshold)}
-          onPick={(p) =>
-            setS((x) => (x ? { ...x, redundancy_duplicate_threshold: p.dup, redundancy_similar_threshold: p.similar } : x))
-          }
-        />
         </div>
       </Card>
 
