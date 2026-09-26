@@ -21,27 +21,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <ToastProvider>
       <div className="min-h-dvh flex flex-col">
-        <header className="sticky top-0 z-30 bg-paper/85 backdrop-blur border-b border-black/5">
-          <div className="mx-auto max-w-2xl lg:max-w-6xl px-4 lg:px-8 h-14 flex items-center">
-            <Link href="/" aria-label="FitCheck home" className="flex items-center gap-2 font-semibold tracking-tight text-[17px]">
-              <span className="grid place-items-center size-8 rounded-xl bg-ink text-white text-sm font-bold">F✓</span>
-              FitCheck
-            </Link>
-          </div>
-        </header>
-        <main className="flex-1 mx-auto w-full max-w-2xl lg:max-w-6xl px-4 lg:px-8 pt-4 lg:pt-6 main-nav-pad">{children}</main>
-        <nav
-          aria-label="Main"
-          className="fixed bottom-0 inset-x-0 z-40 flex justify-center px-5 nav-float-pad pointer-events-none"
-        >
-          <div className="pointer-events-auto flex items-center gap-2.5 p-1.5 rounded-full bg-white shadow-[0_12px_30px_-10px_rgba(74,47,24,0.35),0_2px_8px_rgba(74,47,24,0.08)] ring-1 ring-black/[0.04]">
-            <SideTab tab={CLOSET} active={isActive(CLOSET, pathname)} />
-            <MiddleTab tab={BUY} active={isActive(BUY, pathname)} />
-            <SideTab tab={PREFS} active={isActive(PREFS, pathname)} />
-          </div>
-        </nav>
+        <AppHeader />
+        <main className={MAIN_CLS}>{children}</main>
+        <MainNav pathname={pathname} />
       </div>
     </ToastProvider>
+  );
+}
+
+/** Classes of the page body under the header (also used by the landing intro's closet preview). */
+export const MAIN_CLS = "flex-1 mx-auto w-full max-w-2xl lg:max-w-6xl px-4 lg:px-8 pt-4 lg:pt-6 main-nav-pad";
+
+export function AppHeader() {
+  return (
+    <header className="sticky top-0 z-30 bg-paper/85 backdrop-blur border-b border-black/5">
+      <div className="mx-auto max-w-2xl lg:max-w-6xl px-4 lg:px-8 h-14 flex items-center">
+        <Link href="/" aria-label="FitCheck home" className="flex items-center gap-2 font-semibold tracking-tight text-[17px]">
+          <span className="grid place-items-center size-8 rounded-xl bg-ink text-white text-sm font-bold">F✓</span>
+          FitCheck
+        </Link>
+      </div>
+    </header>
+  );
+}
+
+/** Floating bottom nav. It is position:fixed, so inside a transformed/contained box it pins to that box instead. */
+export function MainNav({ pathname, className }: { pathname: string | null; className?: string }) {
+  return (
+    <nav
+      aria-label="Main"
+      className={cn("fixed bottom-0 inset-x-0 z-40 flex justify-center px-5 nav-float-pad pointer-events-none", className)}
+    >
+      <div className="pointer-events-auto flex items-center gap-2.5 p-1.5 rounded-full bg-white shadow-[0_12px_30px_-10px_rgba(74,47,24,0.35),0_2px_8px_rgba(74,47,24,0.08)] ring-1 ring-black/[0.04]">
+        <SideTab tab={CLOSET} active={isActive(CLOSET, pathname)} />
+        <MiddleTab tab={BUY} active={isActive(BUY, pathname)} />
+        <SideTab tab={PREFS} active={isActive(PREFS, pathname)} />
+      </div>
+    </nav>
   );
 }
 

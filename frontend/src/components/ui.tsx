@@ -5,6 +5,7 @@ import { X, Loader2, ImageOff } from "lucide-react";
 import { cn } from "@/lib/format";
 import { mediaUrl } from "@/lib/api";
 import { colorToCss } from "@/lib/constants";
+import { isImageLoaded, markImageLoaded } from "@/lib/closetCache";
 
 type BtnProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "ghost" | "danger" | "accent";
@@ -143,13 +144,21 @@ export function LoadingImg({
   lazy?: boolean;
 }) {
   const ref = useRef<HTMLImageElement>(null);
-  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
-  const loaded = loadedSrc === src;
+  // Images preloaded earlier in this session (e.g. by the landing intro) show at once: no skeleton, no fade.
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (isImageLoaded(src) ? src : null));
+  const loaded = loadedSrc === src || isImageLoaded(src);
+  const onLoad = () => {
+    markImageLoaded(src);
+    setLoadedSrc(src);
+  };
   // Already-cached images can finish before React attaches onLoad (e.g. after hydration).
   useEffect(() => {
     const el = ref.current;
     if (!el || !el.complete || !el.naturalWidth) return;
-    const t = setTimeout(() => setLoadedSrc(src), 0);
+    const t = setTimeout(() => {
+      markImageLoaded(src);
+      setLoadedSrc(src);
+    }, 0);
     return () => clearTimeout(t);
   }, [src]);
   return (
@@ -161,7 +170,7 @@ export function LoadingImg({
         src={src}
         alt={alt}
         loading={lazy ? "lazy" : undefined}
-        onLoad={() => setLoadedSrc(src)}
+        onLoad={onLoad}
         onError={onError}
         className={cn("transition-opacity duration-300", loaded ? "opacity-100" : "opacity-0", className)}
       />
