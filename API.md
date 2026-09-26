@@ -11,7 +11,7 @@ Timestamps (`created_at`) are ISO-8601 UTC.
 ```json
 {
   "id": "it_2a8505fb19fc",
-  "status": "closet",                 // "closet" | "candidate" | "detected"
+  "status": "closet",                 // "closet" | "candidate" | "detected" | "suggestion" (shopping pick; never in the closet/FAISS)
   "category": "top",                  // top | bottom | dress | outerwear | shoes | accessory
   "image_url": "/media/white/498fb1ccdf6f_0.jpg",    // cutout on white (use this for display)
   "cutout_url": "/media/cutouts/498fb1ccdf6f_0.png", // transparent PNG
@@ -160,6 +160,68 @@ counts only if the new shoes pass AND score higher than every shoe you already o
 **Unsupported categories (accessory):** HTTP 200 with `"supported": false`, a friendly `"message"`,
 `outfits: []`, `total_new_outfits: 0`, `value.value_score: null` and
 `verdict: {"decision": "UNSUPPORTED", "reasons": [message]}`. Redundancy is still computed.
+
+## POST /api/evaluations/{evaluation_id}/suggestions[?refresh=true]
+Live-shopping picks for an evaluation, called by the UI **after** the verdict renders. Mode follows the verdict:
+* `SKIP` → `"mode": "alternatives"`, title "Better picks instead": real products of the **same type** in colors /
+  textures unlike the candidate and the closet. Must not be a near-duplicate of the closet, must not share the
+  candidate's color, and must beat the candidate on new outfits or value. Ranked BUY-verdict first, then outfits,
+  value, cost per outfit.
+* `BUY` → `"mode": "pairings"`, title "Pairs well with this": real products in the **other slots**
+  (top / bottom / outerwear / shoes / dress as relevant). Each one is scored against the *future* closet (closet + the
+  candidate); it must form outfits that include the candidate and get its own `BUY` from `compute_value_and_verdict`
+  (with the candidate's price counted as spent). Ranked by outfits with the candidate, then outfits, then value;
+  at most 2 per category.
+* `UNSUPPORTED` → empty `suggestions` with a `message`.
+
+At most **3** suggestions; fewer if fewer qualify (never padded). Results are cached per evaluation in the
+`suggestions` table (`cached: true` on re-open, no Gemini call); `?refresh=true` recomputes.
+
+How products are found: **one** Gemini call. With a key that has Google Search grounding (paid tier), it's
+`gemini-3-flash-preview` + `google_search`, asking for strict-JSON products (grounding redirect URLs are
+resolved). Grounding is **not available on the free tier** (tier 429); the backend then remembers that for 6 h
+and instead makes one normal JSON-mode Gemini call that plans ~8 targeted shopping queries, which run live
+against public Shopify storefront search (`/search/suggest.json`) of ~16 retailers (Everlane, Princess Polly,
+Good American, Marine Layer, tentree, Outerknown, Allbirds, Fashion Nova, Thursday Boots, Bonobos...). Then for
+each product: check the link (HTTP 200), fetch a clean product photo (image_url, else og:image / twitter:image /
+JSON-LD; on-model and lifestyle shots are rejected when a garment-only shot isn't available), cut it out with
+segformer, embed with fashion-clip, and run the normal redundancy + OutfitTransformer + verdict pipeline on it as
+a hypothetical item (`status: "suggestion"`, media under `/media/suggest/`). No other Gemini calls. Takes ~25-30 s
+on CPU (Gemini ~4 s, search ~3 s, fetch ~9-14 s, pipeline ~10 s).
+
+```json
+{
+  "evaluation_id": "ev_1cddffd5bd44", "mode": "pairings", "title": "Pairs well with this",
+  "candidate_verdict": "BUY", "cached": false, "message": null,       // message set when nothing qualifies
+  "source": "store_search",            // or "google_search" (grounded) / fixture replays
+  "model": "gemini-3-flash-preview", "search_queries": ["navy quilted vest", "..."], "stores": ["everlane.com", "..."],
+  "considered": 8, "with_photo": 6,
+  "timing_s": {"gemini": 4.2, "search": 2.9, "fetch": 8.5, "pipeline": 10.1, "total": 25.7},
+  "suggestions": [{
+    "id": "it_b60c4dbe68f5", "item": { /* Item, status "suggestion" */ },
+    "name": "Marina Quilted Vest", "brand": "Marine Layer", "retailer": "Marine Layer",
+    "price": 68.0, "currency": "USD",
+    "product_url": "https://www.marinelayer.com/products/marina-quilted-vest", "link_status": 200, "link_ok": true,
+    "image_url": "/media/suggest/sg_....jpg",        // cutout on white
+    "photo_url": "/media/suggest/sg_..._orig.jpg",   // the retailer's photo (local copy)
+    "source_image_url": "https://cdn.shopify.com/...",
+    "category": "outerwear", "subcategory": "jacket", "color": "navy", "color_source": "listing", "material": null,
+    "reason": "Unlocks 43 outfits, 7 with the white trousers, $1.58 per outfit",
+    "verdict": {"decision": "BUY", "reasons": ["..."]}, "value": { /* as in /api/evaluate */ },
+    "total_new_outfits": 43, "outfits_with_candidate": 7,
+    "outfit_count_by_template": {"top+bottom+outerwear+shoes": 40, "dress+outerwear+shoes": 3}, "template_names": ["..."],
+    "redundancy": {"level": "none", "top_similarity": 0.71, "closest": "black jacket"},
+    "similarity_to_candidate": null,
+    "outfits": [ /* up to 12 Outfit objects, ones containing the candidate first */ ]
+  }],
+  "rejected": [{"name": "...", "retailer": "Fashion Nova", "reason": "no clean photo of the garment (lifestyle / worn shot)"}]
+}
+```
+Errors: `404` unknown evaluation; `503 {"detail": "...quota..."}` when Gemini is exhausted/unavailable (nothing
+cached, the UI shows a friendly note + Retry); `500` otherwise.
+
+## GET /api/evaluations/{evaluation_id}/suggestions
+The cached result (same shape, `cached: true`) or `404` if none yet. Never calls Gemini.
 
 ## POST /api/candidate/{item_id}/add-to-closet
 "I bought it" → `Item` with `status: "closet"` (records `purchased_at` / `purchase_price`, which count against the monthly budget).

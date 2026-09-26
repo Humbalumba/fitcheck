@@ -5,6 +5,7 @@ import type {
   Health,
   Item,
   Settings,
+  SuggestionsResponse,
 } from "./types";
 import { mockApi } from "./mock";
 
@@ -131,6 +132,13 @@ const realApi = {
       await request<unknown>(`/api/candidate/${encodeURIComponent(itemId)}/add-to-closet`, {
         method: "POST",
       }),
+    ),
+
+  /** Live-shopping suggestions for an evaluation (cached server-side; first call can take ~30 s). */
+  suggestions: (evaluationId: string, refresh = false) =>
+    request<SuggestionsResponse>(
+      `/api/evaluations/${encodeURIComponent(evaluationId)}/suggestions${refresh ? "?refresh=true" : ""}`,
+      { method: "POST", timeoutMs: 150_000 },
     ),
 
   getSettings: () => request<Settings>("/api/settings"),

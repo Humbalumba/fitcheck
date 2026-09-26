@@ -115,3 +115,51 @@ export interface Health {
   scorer: string;
   [key: string]: unknown;
 }
+
+/** A real product suggested after a verdict (POST /api/evaluations/{id}/suggestions). */
+export interface Suggestion {
+  id: string; // hypothetical item (status "suggestion"; never in the closet)
+  item: Item;
+  name: string;
+  brand?: string | null;
+  retailer?: string | null;
+  price: number | null;
+  currency?: string;
+  product_url: string;
+  link_status?: number | null;
+  link_ok?: boolean | null;
+  image_url?: string | null; // cutout on white
+  photo_url?: string | null; // original product photo (local copy)
+  source_image_url?: string | null;
+  category: Category;
+  subcategory?: string | null;
+  color?: string | null;
+  material?: string | null;
+  reason: string;
+  verdict: { decision: "BUY" | "SKIP" | string; reasons: string[] };
+  value: EvaluateResponse["value"];
+  total_new_outfits: number;
+  outfits_with_candidate: number;
+  outfit_count_by_template: Record<string, number>;
+  template_names: string[];
+  redundancy: { level: string; top_similarity?: number | null; closest?: string | null };
+  similarity_to_candidate?: number | null;
+  outfits: Outfit[];
+}
+
+export interface SuggestionsResponse {
+  evaluation_id: string;
+  mode: "alternatives" | "pairings" | "none" | string;
+  title: string;
+  candidate_verdict: string;
+  suggestions: Suggestion[];
+  rejected?: Array<{ name: string; retailer?: string | null; reason: string }>;
+  message?: string | null;
+  considered?: number;
+  with_photo?: number;
+  source?: string;
+  model?: string | null;
+  timing_s?: Record<string, number>;
+  generated_at?: string;
+  cached?: boolean;
+}

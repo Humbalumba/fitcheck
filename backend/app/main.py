@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, gemini, pipeline
+from . import config, db, gemini, pipeline, suggest
 from .evaluate import evaluate as run_evaluate
 from .scoring import get_scorer, scorer_kind
 from .vectors import closet_index
@@ -150,6 +150,29 @@ def evaluate(body: EvaluateBody):
     res = run_evaluate(body.item_id, body.price)
     res.pop("settings", None)
     return res
+
+
+@app.post("/api/evaluations/{evaluation_id}/suggestions")
+def evaluation_suggestions(evaluation_id: str, refresh: bool = False):
+    """Live-shopping suggestions for an evaluation (SKIP -> better alternatives, BUY -> pairings). One grounded
+    Gemini call, cached per evaluation (refresh=true recomputes)."""
+    if db.get_evaluation(evaluation_id) is None:
+        raise HTTPException(404, f"evaluation {evaluation_id} not found")
+    try:
+        return suggest.get_or_create(evaluation_id, refresh=refresh)
+    except suggest.GeminiUnavailable as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        log.exception("suggestions failed")
+        raise HTTPException(500, f"suggestions failed: {type(e).__name__}: {e}")
+
+
+@app.get("/api/evaluations/{evaluation_id}/suggestions")
+def get_evaluation_suggestions(evaluation_id: str):
+    cached = db.get_suggestions(evaluation_id)
+    if cached is None:
+        raise HTTPException(404, f"no suggestions yet for evaluation {evaluation_id}")
+    return {**cached, "cached": True}
 
 
 @app.post("/api/candidate/{item_id}/add-to-closet")

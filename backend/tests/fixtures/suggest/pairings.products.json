@@ -1,0 +1,91 @@
+{
+ "source": "store_search",
+ "model": "gemini-3-flash-preview",
+ "queries": [
+  "linen button down",
+  "striped boatneck top",
+  "cropped utility jacket",
+  "knit cardigan sweater",
+  "woven leather mules",
+  "canvas platform sneakers",
+  "silk camisole top",
+  "quilted vest"
+ ],
+ "products": [
+  {
+   "name": "Marina Quilted Vest",
+   "brand": "Marine Layer",
+   "retailer": "Marine Layer",
+   "price": 68.0,
+   "product_url": "https://www.marinelayer.com/products/marina-quilted-vest",
+   "image_url": null,
+   "category": "outerwear",
+   "subcategory": "jacket",
+   "color": "blue",
+   "material": "unknown",
+   "pattern": "solid",
+   "formality": 2,
+   "style_tags": [
+    "outdoorsy",
+    "layered"
+   ],
+   "gender_presentation": "womens",
+   "_span": [
+    0,
+    0
+   ],
+   "fixture_image": "pairings_0.jpg",
+   "link_status": 200
+  },
+  {
+   "name": "Striped Boatneck Sweater in Everyday Cotton | True Navy/Bone",
+   "brand": "Everlane",
+   "retailer": "Everlane",
+   "price": 59.0,
+   "product_url": "https://www.everlane.com/products/womens-striped-boatneck-sweater-cotton-true-navy-bone",
+   "image_url": null,
+   "category": "top",
+   "subcategory": "t-shirt",
+   "color": "navy",
+   "material": "cotton",
+   "pattern": "striped",
+   "formality": 2,
+   "style_tags": [
+    "nautical",
+    "classic"
+   ],
+   "gender_presentation": "womens",
+   "_span": [
+    0,
+    0
+   ],
+   "fixture_image": "pairings_1.jpg",
+   "link_status": 200
+  },
+  {
+   "name": "BUTTON FRONT KNIT CARDIGAN | VANILLA001",
+   "brand": "Good American",
+   "retailer": "Good American",
+   "price": 106.99,
+   "product_url": "https://www.goodamerican.com/products/button-front-knit-cardigan-vanilla001",
+   "image_url": null,
+   "category": "outerwear",
+   "subcategory": "cardigan",
+   "color": "cream",
+   "material": "knit",
+   "pattern": "solid",
+   "formality": 2,
+   "style_tags": [
+    "minimalist",
+    "cozy"
+   ],
+   "gender_presentation": "womens",
+   "_span": [
+    0,
+    0
+   ],
+   "fixture_image": "pairings_2.jpg",
+   "link_status": 200
+  }
+ ]
+}

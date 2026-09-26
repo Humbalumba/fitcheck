@@ -94,6 +94,8 @@ def _key_from_dotenv() -> str | None:
 
 
 def api_key() -> str | None:
+    if os.environ.get("FITCHECK_GEMINI_OFF") == "1":  # tests / offline runs: never spend quota
+        return None
     k = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or _key_from_dotenv()
     return k.strip() if k and k.strip() else None
 
@@ -368,3 +370,118 @@ def detect_items(img: Image.Image) -> list[dict]:
         d["source"] = "gemini"
         out.append({"box_2d": [y0, x0, y1, x1], "label": label, "attributes": d})
     return out
+
+
+# ------------------------------------------------------------------ Grounded search (shopping suggestions)
+_no_grounding: set[str] = set()  # models that rejected the google_search tool (400) in this process
+_grounding_blocked_until = 0.0   # set when the key's tier has no search grounding (free tier on Gemini 3.x)
+
+
+class GeminiUnavailable(RuntimeError):
+    """Every model in the chain is out of quota / unavailable (message is user-presentable)."""
+
+
+class GroundingUnavailable(RuntimeError):
+    """Google Search grounding isn't available for this API key (e.g. free tier) -- caller should fall back."""
+
+
+def grounding_available() -> bool:
+    import time as _time
+    return _time.time() >= _grounding_blocked_until
+
+
+def generate_grounded(prompt: str, low_thinking: bool = True) -> dict:
+    """ONE generate_content call with the Google Search grounding tool, failing over along model_chain().
+    Grounded calls can't use response_mime_type=JSON on every model, so the caller parses JSON from the text.
+    Returns a plain dict {"text", "model", "chunks": [{"uri","title","domain"}], "supports": [{"start","end",
+    "text","chunks"}], "queries"} so it can be saved as a fixture and replayed.
+
+    Quota handling differs from _generate on purpose: a 429 WITHOUT a per-day/per-minute quota metric means
+    "search grounding isn't available on this tier" (free tier on Gemini 3.x) -> GroundingUnavailable, and the
+    models are NOT marked exhausted (normal detection calls still work). A per-day 429 marks that model exhausted."""
+    import time as _time
+    global _grounding_blocked_until
+    from google.genai import types
+    if not grounding_available():
+        raise GroundingUnavailable("Google Search grounding isn't available for this API key")
+    last = None
+    for name in [n for n in model_chain() if _available(n) and n not in _no_grounding]:
+        variants = _thinking_variants(name, low_thinking)
+        start = min(_working_variant.get(name, 0), len(variants) - 1)
+        next_model = False
+        for n in range(start, len(variants)):
+            cfg = types.GenerateContentConfig(temperature=0.4, tools=[types.Tool(google_search=types.GoogleSearch())],
+                                              **variants[n])
+            for attempt in range(2):
+                try:
+                    resp = client().models.generate_content(model=name, contents=[prompt], config=cfg)
+                    _working_variant[name] = n
+                    return _grounded_to_dict(resp, name)
+                except Exception as e:
+                    last = e
+                    msg = str(e)
+                    if _is_status(e, 429):
+                        if "PerDay" in msg:
+                            _mark_exhausted(name, e)
+                            next_model = True
+                        elif "PerMinute" in msg or _RETRY_DELAY_RE.search(msg):
+                            if attempt == 0:
+                                m = _RETRY_DELAY_RE.search(msg)
+                                _time.sleep(min(float(m.group(1)) + 0.5, 15.0) if m else 5.0)
+                                continue
+                            next_model = True
+                        else:  # "check your plan and billing": no grounding on this tier, same for every model
+                            _grounding_blocked_until = _time.time() + 6 * 3600
+                            log.warning("Google Search grounding not available for this key (%s); using fallback",
+                                        msg[:90])
+                            raise GroundingUnavailable("Google Search grounding isn't available for this API key "
+                                                       "(free tier)") from e
+                    elif _is_status(e, 500, 503):
+                        if attempt == 0:
+                            _time.sleep(2.0)
+                            continue
+                        next_model = True
+                    elif _is_status(e, 404):
+                        next_model = True
+                    elif _is_status(e, 400) and re.search(r"search|tool|grounding", msg, re.I) \
+                            and "thinking" not in msg.lower():
+                        log.warning("Gemini %s rejected google_search grounding (%s); failing over", name, msg[:120])
+                        _no_grounding.add(name)
+                        next_model = True
+                    break  # other errors (e.g. thinking variant rejected): next variant
+            if next_model:
+                break
+    if last is None or _is_status(last, 404, 429, 500, 503):
+        raise GeminiUnavailable("Gemini is out of free quota or busy right now (quota resets 3 AM ET)") from last
+    raise last
+
+
+def _grounded_to_dict(resp, model: str) -> dict:
+    text = ""
+    try:
+        text = resp.text or ""
+    except Exception:
+        pass
+    if not text:
+        try:
+            text = "".join(p.text or "" for p in resp.candidates[0].content.parts if getattr(p, "text", None))
+        except Exception:
+            text = ""
+    chunks, supports, queries = [], [], []
+    try:
+        gm = resp.candidates[0].grounding_metadata
+    except Exception:
+        gm = None
+    if gm is not None:
+        for c in gm.grounding_chunks or []:
+            w = getattr(c, "web", None)
+            if w is not None:
+                chunks.append({"uri": w.uri, "title": w.title, "domain": getattr(w, "domain", None)})
+            else:
+                chunks.append({"uri": None, "title": None, "domain": None})
+        for s in gm.grounding_supports or []:
+            seg = s.segment
+            supports.append({"start": getattr(seg, "start_index", None) or 0, "end": getattr(seg, "end_index", None) or 0,
+                             "text": getattr(seg, "text", None), "chunks": list(s.grounding_chunk_indices or [])})
+        queries = list(gm.web_search_queries or [])
+    return {"text": text, "model": model, "chunks": chunks, "supports": supports, "queries": queries}

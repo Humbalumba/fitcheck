@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS photos (
 );
 CREATE TABLE IF NOT EXISTS items (
     id TEXT PRIMARY KEY,
-    status TEXT NOT NULL CHECK (status IN ('closet','candidate','detected')),
+    status TEXT NOT NULL CHECK (status IN ('closet','candidate','detected','suggestion')),
     category TEXT,
     attributes TEXT NOT NULL DEFAULT '{}',
     photo_id TEXT REFERENCES photos(id) ON DELETE SET NULL,
@@ -89,6 +89,13 @@ CREATE TABLE IF NOT EXISTS outfit_items (
     position INTEGER,
     PRIMARY KEY (outfit_id, item_id)
 );
+-- shopping suggestions per evaluation (cached so re-opening a result doesn't spend Gemini quota)
+CREATE TABLE IF NOT EXISTS suggestions (
+    evaluation_id TEXT PRIMARY KEY REFERENCES evaluations(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL,           -- 'alternatives' (verdict SKIP) | 'pairings' (verdict BUY)
+    results TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     data TEXT NOT NULL,
@@ -119,6 +126,7 @@ def init_db() -> None:
         if _initialized and config.DB_PATH.exists():
             return
         conn = _connect()
+        _migrate_items_status(conn)
         conn.executescript(SCHEMA)
         row = conn.execute("SELECT data FROM settings WHERE id=1").fetchone()
         if row is None:
@@ -127,6 +135,48 @@ def init_db() -> None:
         conn.commit()
         conn.close()
         _initialized = True
+
+
+ITEM_COLUMNS = ("id, status, category, attributes, photo_id, bbox, label, crop_path, cutout_path, white_path, "
+                "context_path, source, created_at, updated_at")
+
+
+def _migrate_items_status(conn: sqlite3.Connection) -> None:
+    """Older DBs have CHECK (status IN ('closet','candidate','detected')). SQLite can't ALTER a CHECK, so rebuild
+    the items table (standard 12-step procedure: FKs off, copy rows, swap, verify) keeping every row, then
+    re-enable FKs. Embeddings / outfits / evaluations keep pointing at the same item ids."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='items'").fetchone()
+    if row is None or "'suggestion'" in (row[0] or ""):
+        return
+    items_ddl = SCHEMA.split("CREATE TABLE IF NOT EXISTS items (", 1)[1].split(");", 1)[0]
+    n_before = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    old_iso = conn.isolation_level
+    conn.isolation_level = None  # manual transaction control (PRAGMA foreign_keys is a no-op inside one)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TABLE IF EXISTS items_new")
+        conn.execute(f"CREATE TABLE items_new ({items_ddl})")
+        conn.execute(f"INSERT INTO items_new ({ITEM_COLUMNS}) SELECT {ITEM_COLUMNS} FROM items")
+        n_after = conn.execute("SELECT COUNT(*) FROM items_new").fetchone()[0]
+        if n_after != n_before:
+            raise RuntimeError(f"items migration copied {n_after}/{n_before} rows")
+        conn.execute("DROP TABLE items")
+        conn.execute("ALTER TABLE items_new RENAME TO items")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_status ON items(status, category)")
+        bad = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if bad:
+            raise RuntimeError(f"foreign key check failed after items migration: {bad[:3]}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.isolation_level = old_iso
+    import logging
+    logging.getLogger("fitcheck.db").info("Migrated items table: status CHECK now allows 'suggestion' (%d rows kept)",
+                                          n_before)
 
 
 @contextmanager
@@ -316,6 +366,28 @@ def save_evaluation(candidate_id: str, price, verdict: str, results: dict, outfi
             c.executemany("INSERT OR IGNORE INTO outfit_items(outfit_id,item_id,position) VALUES (?,?,?)",
                           [(oid, iid, pos) for pos, iid in enumerate(o["item_ids"])])
     return eid
+
+
+def get_evaluation(eid: str) -> dict | None:
+    with get_conn() as c:
+        row = c.execute("SELECT * FROM evaluations WHERE id=?", (eid,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["results"] = json.loads(d["results"])
+    return d
+
+
+def get_suggestions(eid: str) -> dict | None:
+    with get_conn() as c:
+        row = c.execute("SELECT results FROM suggestions WHERE evaluation_id=?", (eid,)).fetchone()
+    return json.loads(row["results"]) if row else None
+
+
+def save_suggestions(eid: str, mode: str, results: dict) -> None:
+    with get_conn() as c:
+        c.execute("INSERT OR REPLACE INTO suggestions(evaluation_id, mode, results, created_at) VALUES (?,?,?,?)",
+                  (eid, mode, json.dumps(results), now_iso()))
 
 
 def reset_all() -> None:

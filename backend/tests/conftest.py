@@ -1,4 +1,9 @@
-"""Tests run against a *copy* of the seeded demo DB + FAISS index so the running server isn't touched."""
+"""Tests run against a *copy* of the seeded demo DB + FAISS index so the running server isn't touched.
+
+Source data dir: $FITCHECK_TEST_DATA_DIR, else ../../fitcheck-testdata (sibling of the repo) if it exists, else
+backend/data. The live closet may be the user's real (small) closet, so seed a scratch dir for tests:
+  FITCHECK_DATA_DIR=/path/fitcheck-testdata python scripts/seed_demo_closet.py --reset
+Gemini is switched off (FITCHECK_GEMINI_OFF=1) so tests never spend quota; FITCHECK_TEST_GEMINI=1 re-enables it."""
 import os
 import shutil
 import sys
@@ -12,16 +17,22 @@ sys.path.insert(0, str(BACKEND))
 _tmp = Path(tempfile.mkdtemp(prefix="fitcheck_test_"))
 import sqlite3  # noqa: E402
 
-if (BACKEND / "data" / "fitcheck.db").exists():  # consistent snapshot incl. WAL contents
-    src = sqlite3.connect(BACKEND / "data" / "fitcheck.db")
+_sibling = BACKEND.parent.parent / "fitcheck-testdata"
+SRC = Path(os.environ.get("FITCHECK_TEST_DATA_DIR")
+           or (_sibling if (_sibling / "fitcheck.db").exists() else BACKEND / "data"))
+if (SRC / "fitcheck.db").exists():  # consistent snapshot incl. WAL contents
+    src = sqlite3.connect(SRC / "fitcheck.db")
     dst = sqlite3.connect(_tmp / "fitcheck.db")
     src.backup(dst)
     dst.close(); src.close()
 for name in ("closet.faiss", "closet.ids.npy"):
-    if (BACKEND / "data" / name).exists():
-        shutil.copy(BACKEND / "data" / name, _tmp / name)
+    if (SRC / name).exists():
+        shutil.copy(SRC / name, _tmp / name)
+os.environ["FITCHECK_DATA_DIR"] = str(SRC)  # media paths of the seeded items live under SRC/media
 os.environ["FITCHECK_DB"] = str(_tmp / "fitcheck.db")
 os.environ["FITCHECK_FAISS"] = str(_tmp / "closet.faiss")
+if os.environ.get("FITCHECK_TEST_GEMINI") != "1":
+    os.environ["FITCHECK_GEMINI_OFF"] = "1"
 
 
 @pytest.fixture(scope="session")

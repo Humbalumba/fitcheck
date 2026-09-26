@@ -1,0 +1,91 @@
+{
+ "source": "store_search",
+ "model": "gemini-3-flash-preview",
+ "queries": [
+  "sage rib tank",
+  "terracotta linen tank",
+  "striped knit tank",
+  "olive silk tank",
+  "blush pointelle tank",
+  "mustard square tank",
+  "rust crochet tank",
+  "lilac modal tank"
+ ],
+ "products": [
+  {
+   "name": "Arivelle Tank Top Blue / Yellow Stripe",
+   "brand": "Princess Polly",
+   "retailer": "Princess Polly",
+   "price": 39.0,
+   "product_url": "https://us.princesspolly.com/products/arivelle-tank-top-blue-yellow-stripe",
+   "image_url": null,
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "yellow",
+   "material": "unknown",
+   "pattern": "striped",
+   "formality": 2,
+   "style_tags": [
+    "modern",
+    "vibrant"
+   ],
+   "gender_presentation": "womens",
+   "_span": [
+    0,
+    0
+   ],
+   "fixture_image": "alternatives_0.jpg",
+   "link_status": 200
+  },
+  {
+   "name": "The Luxe Rib\u00a0Square-Neck Tank | Heathered Fatigue",
+   "brand": "Everlane",
+   "retailer": "Everlane",
+   "price": 34.0,
+   "product_url": "https://www.everlane.com/products/womens-luxe-rib-square-neck-tank-heathered-fatigue",
+   "image_url": null,
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "green",
+   "material": "cotton",
+   "pattern": "solid",
+   "formality": 2,
+   "style_tags": [
+    "casual",
+    "earthy"
+   ],
+   "gender_presentation": "womens",
+   "_span": [
+    0,
+    0
+   ],
+   "fixture_image": "alternatives_1.jpg",
+   "link_status": 200
+  },
+  {
+   "name": "Kinney Tank",
+   "brand": "tentree",
+   "retailer": "tentree",
+   "price": 40.0,
+   "product_url": "https://www.tentree.com/products/kinney-tank-turquoise-sky-heather",
+   "image_url": null,
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "orange",
+   "material": "cotton",
+   "pattern": "solid",
+   "formality": 3,
+   "style_tags": [
+    "summer",
+    "breathable"
+   ],
+   "gender_presentation": "womens",
+   "_span": [
+    0,
+    0
+   ],
+   "fixture_image": "alternatives_2.jpg",
+   "link_status": 200
+  }
+ ]
+}

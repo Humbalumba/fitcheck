@@ -1,0 +1,129 @@
+{
+ "kind": "plan",
+ "mode": "alternatives",
+ "model": "gemini-3-flash-preview",
+ "prompt": "You are a personal shopper planning an online shopping search.\nShopper's wardrobe (40 items): bottom: 10 (jeans, shorts, skirt; colors light blue, blue, black, beige); dress: 4 (dress; colors burgundy, black, yellow, brown); outerwear: 7 (leather jacket, denim jacket, coat; colors beige, black, indigo, blue); shoes: 8 (boots, sandals, sneakers; colors black, light blue, yellow, brown); top: 11 (shirt, t-shirt, tank top; colors grey, white, black, navy).\nItem they are considering: black tank top (women's; category top; subcategory tank top; color black; material unknown; pattern solid; formality 1/5; style n/a; price $28).\nOur wardrobe analysis says SKIP it: Pairs into 30 outfits, but they'd mostly repeat looks you already have; Very similar to your black tank top (0.90 match); $0.93 per new outfit (within your $10 limit).\nTASK: find 6 alternative products of the SAME type (women's tank top, category top) that would be better for this wardrobe: DIFFERENT colors, textures, materials or patterns than the considered item (black, unknown material) and than the top colors they already own (grey, white, black, navy), but still easy to wear with their other pieces. Vary them (no two in the same color).\nKeep prices roughly between $11 and $45.\nInstead of products, return 8 search plans (one per product to look for), each with a short store search query and the attributes the product should have. Queries are run on the search boxes of mid-priced US fashion retailers (Everlane, Marine Layer, Petal & Pup, Princess Polly, Good American, Frank And Oak, Outerknown, Allbirds, ...), so use plain product-title words (no brand names, no adjectives like 'stylish'). Make the plans varied (different colors/materials/types).",
+ "latency_s": 4.26,
+ "queries": [
+  {
+   "query": "sage rib tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "green",
+   "material": "cotton",
+   "pattern": "ribbed",
+   "formality": 2,
+   "style_tags": [
+    "casual",
+    "earthy"
+   ],
+   "gender_presentation": "womens",
+   "why": "adds a soft earth tone that complements beige and denim"
+  },
+  {
+   "query": "terracotta linen tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "orange",
+   "material": "linen",
+   "pattern": "solid",
+   "formality": 3,
+   "style_tags": [
+    "summer",
+    "breathable"
+   ],
+   "gender_presentation": "womens",
+   "why": "linen texture provides variety and pairs well with brown shoes"
+  },
+  {
+   "query": "striped knit tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "cream",
+   "material": "knit",
+   "pattern": "striped",
+   "formality": 2,
+   "style_tags": [
+    "nautical",
+    "classic"
+   ],
+   "gender_presentation": "womens",
+   "why": "patterned option to break up solid color bottoms"
+  },
+  {
+   "query": "olive silk tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "olive",
+   "material": "silk",
+   "pattern": "solid",
+   "formality": 4,
+   "style_tags": [
+    "elevated",
+    "minimalist"
+   ],
+   "gender_presentation": "womens",
+   "why": "elevates denim and leather jackets for evening looks"
+  },
+  {
+   "query": "blush pointelle tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "pink",
+   "material": "cotton",
+   "pattern": "pointelle",
+   "formality": 2,
+   "style_tags": [
+    "feminine",
+    "vintage"
+   ],
+   "gender_presentation": "womens",
+   "why": "delicate texture adds visual interest without being loud"
+  },
+  {
+   "query": "mustard square tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "yellow",
+   "material": "jersey",
+   "pattern": "solid",
+   "formality": 2,
+   "style_tags": [
+    "modern",
+    "vibrant"
+   ],
+   "gender_presentation": "womens",
+   "why": "matches existing yellow shoes and burgundy dresses"
+  },
+  {
+   "query": "rust crochet tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "red",
+   "material": "crochet",
+   "pattern": "textured",
+   "formality": 2,
+   "style_tags": [
+    "boho",
+    "artisan"
+   ],
+   "gender_presentation": "womens",
+   "why": "unique texture that stands out from basic cotton tanks"
+  },
+  {
+   "query": "lilac modal tank",
+   "category": "top",
+   "subcategory": "tank top",
+   "color": "purple",
+   "material": "modal",
+   "pattern": "solid",
+   "formality": 1,
+   "style_tags": [
+    "soft",
+    "loungewear"
+   ],
+   "gender_presentation": "womens",
+   "why": "soft pastel hue contrasts nicely with black outerwear"
+  }
+ ]
+}

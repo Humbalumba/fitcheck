@@ -61,7 +61,7 @@ CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"]
 
 for d in (DATA_DIR, MEDIA_DIR, TEST_IMAGES_DIR, MODELS_DIR):
     d.mkdir(parents=True, exist_ok=True)
-for sub in ("originals", "crops", "cutouts", "white", "context"):
+for sub in ("originals", "crops", "cutouts", "white", "context", "suggest"):
     (MEDIA_DIR / sub).mkdir(parents=True, exist_ok=True)
 
 

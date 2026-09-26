@@ -46,7 +46,9 @@ next to real multi-item photos (flat lays, clothes on a bed, mannequin) for Stag
 
 ## Test
 ```bash
-python -m pytest tests -q     # 18 tests on a snapshot copy of the DB; ~15 s
+python -m pytest tests -q     # 29 tests on a snapshot copy of the DB, Gemini off (FITCHECK_GEMINI_OFF=1); ~25 s
+# test data: $FITCHECK_TEST_DATA_DIR, else ../../fitcheck-testdata if present, else data/. The live closet can be
+# small/empty, so seed a scratch dir once:  FITCHECK_DATA_DIR=../../fitcheck-testdata python scripts/seed_demo_closet.py --reset
 GEMINI_API_KEY=... python scripts/test_gemini.py   # Stage 1+2 on data/test_images (throwaway DB)
 # previews: /tmp/gemini_<model>_<photo>.jpg (boxes) and ..._cuts.jpg (cutouts + segmentation strategy)
 # compare a model: GEMINI_MODEL=gemini-3.7-flash GEMINI_FALLBACK_MODEL=gemini-3.7-flash GEMINI_CHAIN_MAX=1 python scripts/test_gemini.py
@@ -91,6 +93,26 @@ redundancy_factor: none 1.0 | similar 0.7 | near_duplicate 0.2;  budget_factor 0
 BUY iff N >= min_new_outfits AND not near_duplicate AND cost_per_outfit <= max_cost_per_outfit AND price <= remaining budget
 ```
 Remaining budget = `monthly_budget` − prices of items bought (add-to-closet) this calendar month.
+
+## Shopping suggestions (`app/suggest.py`)
+After a verdict the UI calls `POST /api/evaluations/{id}/suggestions` (see API.md). SKIP → up to 3 better
+same-type alternatives; BUY → up to 3 pairings from other slots that are themselves BUYs with the future closet.
+* **One Gemini call per evaluation**, cached in the `suggestions` table. Primary: Google Search grounding
+  (`types.Tool(google_search=...)`) on the failover chain. **Grounding needs a paid-tier key**; on this free key
+  every model answers with a tier 429 — detected (no quota metric), remembered for 6 h, and it does *not* mark
+  models exhausted. Fallback: one JSON-mode call plans ~8 shopping queries, run live on public Shopify storefront
+  search of ~16 stores (`SUGGEST_STORES="domain|Name|wm,..."` overrides the list).
+* Each product goes through the same pieces as a closet photo, minus Gemini: photo → segformer cutout (white-bg
+  product shots used as-is) → fashion-clip embedding → redundancy vs closet → OutfitTransformer outfits → verdict.
+  Stored as items with `status='suggestion'` (the items CHECK constraint is migrated on startup by a table rebuild
+  that preserves rows/FKs), media in `data/media/suggest/`; never in the closet list or FAISS.
+* Env: `SUGGEST_GROUNDING=off` (skip straight to store search), `SUGGEST_FETCH_TIMEOUT_S` (default 8),
+  `FITCHECK_SUGGEST_FIXTURE_DIR=<dir>` (replay `<mode>.products.json` / `<mode>.json` (grounded) /
+  `<mode>.plan.json` instead of calling Gemini — `tests/fixtures/suggest` has real recorded responses),
+  `FITCHECK_GEMINI_OFF=1` (never call Gemini). Raw plan responses are recorded to `data/suggest_raw/`.
+* Limitations: store search only covers Shopify retailers (no Uniqlo/Zara/H&M/Gap); products whose only photos are
+  lifestyle / worn shots are dropped (shoes need a product-only shot); color comes from the listing title/tags,
+  else fashion-clip zero-shot; menswear is weaker (few men's stores + the compat model); ~25-30 s per first call.
 
 ## Known limitations
 * **Menswear is weak in the compat model**: Polyvore is ~0.2% men's items; men's outfits score noisier/lower and

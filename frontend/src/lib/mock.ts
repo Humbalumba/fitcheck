@@ -8,6 +8,7 @@ import type {
   Item,
   Outfit,
   Settings,
+  SuggestionsResponse,
 } from "./types";
 import { categoryKey, colorToCss } from "./constants";
 
@@ -310,6 +311,18 @@ export const mockApi = {
     it.status = "closet";
     closet.unshift(it);
     return clone(it);
+  },
+
+  async suggestions(evaluationId: string): Promise<SuggestionsResponse> {
+    await sleep(800);
+    return {
+      evaluation_id: evaluationId,
+      mode: "none",
+      title: "Suggestions",
+      candidate_verdict: "",
+      suggestions: [],
+      message: "Shopping suggestions need the real backend (live product search).",
+    };
   },
 
   async getSettings(): Promise<Settings> {

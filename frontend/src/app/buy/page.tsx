@@ -28,6 +28,7 @@ import { PhotoWithBoxes, boxColor } from "@/components/PhotoWithBoxes";
 import { AttributeEditor, AttributeSummary, diffAttributes } from "@/components/AttributeEditor";
 import { OutfitCard } from "@/components/OutfitCard";
 import { OutfitModal } from "@/components/OutfitModal";
+import { SuggestionsSection } from "@/components/Suggestions";
 import { useToast } from "@/components/Toast";
 
 type Step = "start" | "detecting" | "select" | "evaluating" | "result";
@@ -460,6 +461,11 @@ function ResultView({
           </ul>
         )}
       </div>
+
+      {/* Live-shopping picks: fetched after the verdict renders (SKIP -> alternatives, BUY -> pairings) */}
+      {!unsupported && (buy || decision === "SKIP") && (
+        <SuggestionsSection key={r.evaluation_id} evaluationId={r.evaluation_id} decision={decision} />
+      )}
 
       {/* Headline stats */}
       <Card className="p-5">
