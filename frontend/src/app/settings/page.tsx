@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Target, SlidersHorizontal, RotateCcw, Scale } from "lucide-react";
+import { Target, Sparkles, Copy, RotateCcw, Scale } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Settings } from "@/lib/types";
 import { OCCASION_SUGGESTIONS } from "@/lib/constants";
@@ -12,11 +12,42 @@ import { useToast } from "@/components/Toast";
 
 const DEFAULTS: Settings = {
   compat_threshold: 0.5,
-  redundancy_similar_threshold: 0.82,
-  redundancy_duplicate_threshold: 0.9,
+  redundancy_similar_threshold: 0.8,
+  redundancy_duplicate_threshold: 0.88,
   style_goal: "",
   occasions: [],
 };
+
+// Simple presets for the tuning knobs. Each button maps to exact backend values; the middle one is the default.
+type Preset = { key: string; label: string; hint: string };
+type MatchPreset = Preset & { value: number };
+type DupePreset = Preset & { dup: number; similar: number };
+
+const MATCH_PRESETS: MatchPreset[] = [
+  { key: "chill", label: "Chill", value: 0.25, hint: "More outfits, looser matches. Fun combos welcome." },
+  { key: "balanced", label: "Balanced", value: 0.5, hint: "The sweet spot: outfits that actually go together." },
+  { key: "picky", label: "Picky", value: 0.7, hint: "Only the really strong matches make the cut." },
+];
+
+// dup (near-duplicate) must stay above similar
+const DUPE_PRESETS: DupePreset[] = [
+  { key: "relaxed", label: "Relaxed", dup: 0.92, similar: 0.85, hint: "Only speaks up when it's basically a twin of something you own." },
+  { key: "normal", label: "Normal", dup: 0.88, similar: 0.8, hint: "Gives you a heads-up when it's a lot like something you've got." },
+  { key: "strict", label: "Strict", dup: 0.85, similar: 0.75, hint: "Flags anything that's even kinda close to stuff you own." },
+];
+
+/** Nearest preset, so legacy custom values still highlight a button. */
+function nearestMatch(v: number): string {
+  const x = Number.isFinite(Number(v)) ? Number(v) : 0.5;
+  return MATCH_PRESETS.reduce((a, b) => (Math.abs(b.value - x) < Math.abs(a.value - x) ? b : a)).key;
+}
+
+function nearestDupe(dup: number, similar: number): string {
+  const d = Number.isFinite(Number(dup)) ? Number(dup) : 0.88;
+  const s = Number.isFinite(Number(similar)) ? Number(similar) : 0.8;
+  const dist = (p: DupePreset) => Math.abs(p.dup - d) + Math.abs(p.similar - s);
+  return DUPE_PRESETS.reduce((a, b) => (dist(b) < dist(a) ? b : a)).key;
+}
 
 export default function SettingsPage() {
   const toast = useToast();
@@ -84,8 +115,6 @@ export default function SettingsPage() {
       </div>
     );
 
-  const dupInvalid = s.redundancy_duplicate_threshold < s.redundancy_similar_threshold;
-
   return (
     <div className="space-y-4">
       <PageTitle title="Settings" subtitle="Your goals and how picky FitCheck should be." />
@@ -130,56 +159,42 @@ export default function SettingsPage() {
         </div>
       </Card>
 
-      <Card className="p-5 space-y-6">
-        <SectionTitle icon={<SlidersHorizontal className="size-4" />} title="Decision thresholds" />
-        <SliderRow
-          label="Match strictness"
-          help="Higher = only stronger outfit matches count. 0.5 is balanced; FitCheck calibrates it per outfit size."
-          value={s.compat_threshold}
-          min={0}
-          max={1}
-          step={0.01}
-          fmt={(v) => `${v.toFixed(2)} · ${v < 0.35 ? "Relaxed" : v <= 0.65 ? "Balanced" : "Strict"}`}
-          range={["0 · Relaxed", "1 · Strict"]}
-          onChange={(v) => set("compat_threshold", v)}
-        />
-        <SliderRow
-          label="“Similar” redundancy threshold"
-          help="Similarity at which an item counts as similar to something you own."
-          value={s.redundancy_similar_threshold}
-          min={0}
-          max={1}
-          step={0.01}
-          fmt={(v) => v.toFixed(2)}
-          onChange={(v) => set("redundancy_similar_threshold", v)}
-        />
-        <SliderRow
-          label="“Near-duplicate” threshold"
-          help="Similarity at which it's basically something you already own."
-          value={s.redundancy_duplicate_threshold}
-          min={0}
-          max={1}
-          step={0.01}
-          fmt={(v) => v.toFixed(2)}
-          onChange={(v) => set("redundancy_duplicate_threshold", v)}
-          warn={dupInvalid ? "Should be higher than the similar threshold" : undefined}
+      <Card className="p-5 space-y-5" data-testid="match-picker">
+        <SectionTitle icon={<Sparkles className="size-4" />} title="How picky should outfit matching be?" />
+        <PresetPicker
+          label="Outfit matching"
+          presets={MATCH_PRESETS}
+          active={nearestMatch(s.compat_threshold)}
+          onPick={(p) => set("compat_threshold", p.value)}
         />
         {"use_shoes_layer" in s && (
           <ToggleRow
-            label="Include shoes in outfits"
-            help="Count outfits with a shoes layer (e.g. Top + Bottom + Shoes)."
+            label="Add shoes to outfits"
+            help="Finish each look with your best pair of shoes."
             on={!!s.use_shoes_layer}
             onChange={(v) => set("use_shoes_layer", v)}
           />
         )}
         {"match_gender_presentation" in s && (
           <ToggleRow
-            label="Keep outfits consistent in cut"
-            help="Don't pair menswear-cut with womenswear-cut pieces (unisex items pair with anything)."
+            label="Keep the cut consistent"
+            help="Don't mix menswear-cut and womenswear-cut pieces (unisex stuff goes with anything)."
             on={!!s.match_gender_presentation}
             onChange={(v) => set("match_gender_presentation", v)}
           />
         )}
+      </Card>
+
+      <Card className="p-5 space-y-5" data-testid="dupe-picker">
+        <SectionTitle icon={<Copy className="size-4" />} title="How careful about stuff you already own?" />
+        <PresetPicker
+          label="Duplicate check"
+          presets={DUPE_PRESETS}
+          active={nearestDupe(s.redundancy_duplicate_threshold, s.redundancy_similar_threshold)}
+          onPick={(p) =>
+            setS((x) => (x ? { ...x, redundancy_duplicate_threshold: p.dup, redundancy_similar_threshold: p.similar } : x))
+          }
+        />
       </Card>
 
       <Card className="p-5 space-y-3" data-testid="verdict-explainer">
@@ -194,7 +209,7 @@ export default function SettingsPage() {
             closet (a dress can only make a few), with diminishing returns.
           </li>
           <li>
-            <b>Match quality (20%)</b> — how well its best outfits go together (uses the match strictness above).
+            <b>Match quality (20%)</b> — how well its best outfits go together (based on how picky you set matching above).
           </li>
           <li>
             <b>Cost per wear (40%)</b> — price ÷ expected wears, compared with your usual cost per wear (from prices of
@@ -236,51 +251,44 @@ function Label({ children }: { children: React.ReactNode }) {
   return <div className="text-[11px] font-semibold uppercase tracking-wide text-black/45 mb-1.5">{children}</div>;
 }
 
-function SliderRow({
+function PresetPicker<P extends Preset>({
   label,
-  help,
-  value,
-  min,
-  max,
-  step,
-  fmt,
-  onChange,
-  warn,
-  range,
+  presets,
+  active,
+  onPick,
 }: {
   label: string;
-  help?: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  fmt: (v: number) => string;
-  onChange: (v: number) => void;
-  warn?: string;
-  range?: [string, string];
+  presets: P[];
+  active: string;
+  onPick: (p: P) => void;
 }) {
-  const v = Number(value ?? min);
+  const current = presets.find((p) => p.key === active) ?? presets[Math.floor(presets.length / 2)];
   return (
     <div>
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="text-sm font-semibold">{label}</div>
-        <div className="text-sm font-bold tabular-nums rounded-lg bg-paper px-2 py-0.5">{fmt(v)}</div>
+      <div role="radiogroup" aria-label={label} className="grid grid-cols-3 gap-1 rounded-full bg-paper p-1">
+        {presets.map((p) => {
+          const on = p.key === current.key;
+          return (
+            <button
+              key={p.key}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              data-preset={p.key}
+              onClick={() => onPick(p)}
+              className={cn(
+                "h-10 rounded-full text-sm font-semibold transition",
+                on ? "bg-ink text-white shadow-sm" : "text-black/55 hover:text-black/80 hover:bg-white/70",
+              )}
+            >
+              {p.label}
+            </button>
+          );
+        })}
       </div>
-      {help && <div className="text-xs text-black/50 mt-0.5">{help}</div>}
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={v}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full mt-2.5 h-2"
-      />
-      <div className="flex justify-between text-[10px] text-black/35 -mt-0.5">
-        <span>{range?.[0] ?? fmt(min)}</span>
-        <span>{range?.[1] ?? fmt(max)}</span>
+      <div className="text-xs text-black/55 mt-2 px-1" aria-live="polite">
+        {current.hint}
       </div>
-      {warn && <div className="text-xs text-amber-700 mt-1">{warn}</div>}
     </div>
   );
 }

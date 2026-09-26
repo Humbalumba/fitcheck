@@ -578,7 +578,7 @@ function ResultView({
           <Card className="p-5 text-sm text-black/55">
             {unsupported
               ? r.message || "Outfit scoring isn't available for this category yet."
-              : "No outfits cleared your match strictness. Try lowering it in Settings, or add more of your closet."}
+              : "Nothing matched well enough yet. Try setting outfit matching to Chill in Settings, or add more of your closet."}
           </Card>
         ) : (
           <div className="space-y-5">
