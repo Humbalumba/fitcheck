@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/format";
-import { DOORS_SEEN_KEY } from "@/lib/constants";
 
 const HOLD_MS = 450; // doors stay shut for a beat
 const OPEN_MS = 1650; // swing (1.35s) + overlay fade
@@ -10,7 +9,7 @@ const OPEN_MS = 1650; // swing (1.35s) + overlay fade
 /**
  * Landing intro: a pair of wooden closet doors swing open to reveal the closet.
  * Server-rendered (so it covers the page from the first paint) and hidden by CSS when the inline <head> script marks
- * <html class="fc-no-doors"> (already played this session / reduced motion / not landing on the closet).
+ * <html class="fc-no-doors"> (the first page isn't the closet).
  */
 export function ClosetDoors() {
   const [phase, setPhase] = useState<"closed" | "opening" | "done">("closed");
@@ -20,11 +19,6 @@ export function ClosetDoors() {
     if (skip) {
       const t = setTimeout(() => setPhase("done"), 0);
       return () => clearTimeout(t);
-    }
-    try {
-      sessionStorage.setItem(DOORS_SEEN_KEY, "1");
-    } catch {
-      /* private mode: just play it */
     }
     const t1 = setTimeout(() => setPhase("opening"), HOLD_MS);
     const t2 = setTimeout(() => setPhase("done"), HOLD_MS + OPEN_MS);

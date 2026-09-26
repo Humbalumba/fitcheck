@@ -176,7 +176,7 @@ input[type="range"] {
 }
 
 /* ---------------- Landing: closet doors swing open ---------------- */
-/* Set by the inline script in <head> before paint: already seen this session / reduced motion / not the closet. */
+/* Set by the inline script in <head> before paint when the first page isn't the closet. */
 .fc-no-doors .closet-doors {
   display: none;
 }
@@ -276,7 +276,6 @@ input[type="range"] {
 .closet-door--right .closet-door__handle { left: 14px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .closet-doors { display: none; }
   .skeleton { animation: skeleton-pulse 2.4s infinite ease-in-out; background-image: none; }
   .working-sweep::after { animation: none; }
 }
