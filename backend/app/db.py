@@ -378,6 +378,13 @@ def get_evaluation(eid: str) -> dict | None:
     return d
 
 
+def latest_evaluation_for_item(item_id: str) -> dict | None:
+    with get_conn() as c:
+        row = c.execute("SELECT id FROM evaluations WHERE candidate_item_id=? ORDER BY created_at DESC, rowid DESC "
+                        "LIMIT 1", (item_id,)).fetchone()
+    return get_evaluation(row[0]) if row else None
+
+
 def get_suggestions(eid: str) -> dict | None:
     with get_conn() as c:
         row = c.execute("SELECT results FROM suggestions WHERE evaluation_id=?", (eid,)).fetchone()

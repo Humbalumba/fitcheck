@@ -1,0 +1,326 @@
+{
+  "version": "1.0",
+  "compiled": "2026-09-26",
+  "notes": [
+    "Every number below comes from a published source listed under 'sources'. Where sources disagree we keep one internally consistent primary source (WRAP 2012 for fibres) and record the range in 'note'.",
+    "Carbon factors for fibres are WRAP's whole-life-cycle footprint per kg of fibre in UK clothing (production is ~3/4 of it, laundry ~1/4). They are NOT strictly cradle-to-gate; use them for relative comparison between materials.",
+    "Water factors are WRAP's water footprint per kg of fibre (m3 per tonne == litres per kg). WRAP notes there is little data on water use for synthetic fibres.",
+    "Where no sourced number exists the entry says so and either uses the closest sourced material ('proxy_for') or is null (not estimated)."
+  ],
+  "sources": {
+    "wrap_2012_voc": {
+      "title": "Valuing our clothes: the true cost of how we design, use and dispose of clothing in the UK (Table 1, Table 3 'Variations in footprint by fibre type', Table 4 'using clothes for longer')",
+      "publisher": "WRAP (Waste & Resources Action Programme)",
+      "year": 2012,
+      "url": "https://www.wrap.ngo/resources/report/valuing-our-clothes-true-cost-how-we-design-use-and-dispose-clothing-uk-2012",
+      "pdf": "https://www.fairact.org/wp-content/uploads/Wrap_Valuing_our_clothes_30pourcentsVoC_FINAL_online_2012_07_11.pdf"
+    },
+    "ethical_consumer_2024": {
+      "title": "What is the carbon cost of clothing? (table 'CO2 equivalent produced per kg fabric', attributed to WRAP 2012)",
+      "publisher": "Ethical Consumer (C. Carlile)",
+      "year": 2024,
+      "url": "https://www.ethicalconsumer.org/fashion-clothing/what-is-carbon-cost-clothing"
+    },
+    "nordic_2014": {
+      "title": "Changing consumer behaviour towards increased prevention of textile waste - Background report (Table 3), R. Nielsen & A. Schmidt, FORCE Technology, NA2014:927",
+      "publisher": "Nordic Council of Ministers",
+      "year": 2014,
+      "url": "https://norden.diva-portal.org/smash/get/diva2:764795/FULLTEXT01.pdf"
+    },
+    "te_2014_organic_cotton": {
+      "title": "The Life Cycle Assessment of Organic Cotton Fiber - A Global Average (conducted by PE International)",
+      "publisher": "Textile Exchange",
+      "year": 2014,
+      "url": "https://textileexchange.org/app/uploads/2025/01/the-life-cycle-assessment-of-organic-cotton-fiber_38172.pdf"
+    },
+    "carbonfact_polyester": {
+      "title": "The Carbon Footprint of Polyester (fossil PET 3.12 kg CO2e/kg; mechanically recycled PET 0.68-1.56 kg CO2e/kg, ecoinvent-based)",
+      "publisher": "Carbonfact",
+      "year": null,
+      "url": "https://www.carbonfact.com/blog/knowledge/polyester-carbon-footprint",
+      "accessed": "2026-09-26"
+    },
+    "foen_2017_recycled": {
+      "title": "Recycled Textile Fibres and Textile Recycling (cites ~32% lower CO2 for recycled vs virgin polyester fibre)",
+      "publisher": "Swiss Federal Office for the Environment (FOEN)",
+      "year": 2017,
+      "url": "https://www.bafu.admin.ch/dam/de/sd-web/BP6pNehIQR1W/Recycled-Textile-Fibres-and-Textile-Recycling.pdf"
+    },
+    "astudillo_2015_silk": {
+      "title": "Life cycle assessment of silk production - a case study from India (Astudillo, Thalwitz & Vollrath), Handbook of LCA of Textiles and Clothing pp. 255-274; values as tabulated in Material Innovation Initiative 'What makes silk, silk?' press release",
+      "publisher": "Woodhead/Elsevier; Material Innovation Initiative",
+      "year": 2015,
+      "url": "https://materialinnovation.org/wp-content/uploads/Silk-Report-Press-Release-.pdf"
+    },
+    "brugnoli_2025_leather": {
+      "title": "A global study on the Life Cycle Assessment (LCA) of the modern cow leather industry (Brugnoli et al., Discover Sustainability 6:80), 22.0 kg CO2e per kg leather; range reported alongside Roncevich et al. 2026 (187.1 kg CO2e/kg) and LWG 2024 (22.48 kg CO2e per m2)",
+      "publisher": "Discover Sustainability (Springer); summarised by US Leather / Institute for Data Integrity (industry-affiliated)",
+      "year": 2025,
+      "url": "https://doi.org/10.1007/s43621-025-00798-6",
+      "secondary_url": "https://usleather.org/news-events/the-carbon-footprint-of-leather-a-critical-review-of-roncevich-et-al.-2026"
+    },
+    "lwg_2024_leather": {
+      "title": "Measuring the Environmental Impact of Leather: Life Cycle Assessment - summary (22.48 kg CO2e per m2 finished leather; 68% from farming & slaughter)",
+      "publisher": "Leather Working Group / Spin360",
+      "year": 2024,
+      "url": "https://www.leatherworkinggroup.com/fileadmin/user_upload/LWG_LCA_2024_Summary_.pdf"
+    },
+    "cheah_2013_shoes": {
+      "title": "Manufacturing-focused emissions reductions in footwear production (Cheah, Kirchain et al., J. Cleaner Production 44:18-29) - synthetic running shoe 14 +/- 2.7 kg CO2e per pair, cradle-to-grave",
+      "publisher": "MIT / Journal of Cleaner Production",
+      "year": 2013,
+      "url": "https://dspace.mit.edu/bitstream/handle/1721.1/102070/Olivetti_Manufacturing-focused.pdf"
+    },
+    "bodoga_2024_boots": {
+      "title": "Environmental Impact of Footwear Using Life Cycle Assessment - Case Study of Professional Footwear (Bodoga et al., Sustainability 16(14):6094) - leather safety boots 18.65 kg CO2e per pair, cradle-to-grave; cites GORE-TEX hiking boot LCA at 27.1 kg CO2e per pair",
+      "publisher": "MDPI Sustainability",
+      "year": 2024,
+      "url": "https://www.mdpi.com/2071-1050/16/14/6094"
+    },
+    "pefcr_af_2021": {
+      "title": "Draft Product Environmental Footprint Category Rules (PEFCR) Apparel and Footwear, v1.1 second draft (28 May 2021), Table 6 'Default product duration of service per product sub-category' (number of wears; 1 use = 1 day of wear)",
+      "publisher": "EU PEF pilot / Sustainable Apparel Coalition technical secretariat (hosted by EEB)",
+      "year": 2021,
+      "url": "https://eeb.org/wp-content/uploads/2021/11/Draft-Product-Environmental-Footprint-Category-Rules-PEFCR-apparel-and-footwear.pdf"
+    },
+    "ecobalyse": {
+      "title": "Ecobalyse textile environmental-cost tool (French Ministry of Ecological Transition / ADEME): products.json (daysOfWear per product, matches PEFCR Table 6) and examples.json (example product masses)",
+      "publisher": "Ecobalyse (MTES-MCT, beta.gouv.fr)",
+      "year": null,
+      "url": "https://github.com/MTES-MCT/ecobalyse/tree/master/public/data/textile",
+      "accessed": "2026-09-26"
+    },
+    "sandin_2019": {
+      "title": "Environmental assessment of Swedish clothing consumption - six garments, sustainable futures (Sandin, Roos, Spak, Zamani, Peters), Table 3.1 masses and Table 3.6 number of uses",
+      "publisher": "Mistra Future Fashion / RISE / Chalmers",
+      "year": 2019,
+      "url": "https://research.chalmers.se/publication/514322/file/514322_Fulltext.pdf"
+    },
+    "cottoninc_2019": {
+      "title": "Changes in Average Garment Weight & End-Use Demand (J. Devine), Table 1 average product weight from import data",
+      "publisher": "Cotton Incorporated",
+      "year": 2019,
+      "url": "https://www.cottonworks.com/wp-content/uploads/2019/09/Changes-in-Average-Garment-Weights_Jon-Devine.pdf"
+    },
+    "wrap_2014_longevity": {
+      "title": "Clothing Longevity Protocol (Cooper et al., Nottingham Trent University for WRAP), Figure 2: current lifetime (years) and average wear days per year",
+      "publisher": "WRAP",
+      "year": 2014,
+      "url": "https://www.wrap.ngo/sites/default/files/2021-03/WRAP-clothing-longevity-protocol.pdf"
+    },
+    "emf_2017": {
+      "title": "A New Textiles Economy: Redesigning fashion's future - summary of findings (clothing utilisation down 36% in 15 years; in the US clothes are worn around a quarter of the global average)",
+      "publisher": "Ellen MacArthur Foundation",
+      "year": 2017,
+      "url": "https://content.ellenmacarthurfoundation.org/m/7f818b40f06e1afd/original/Summary-of-findings-A-New-Textiles-Economy.pdf"
+    },
+    "quantis_2018": {
+      "title": "Measuring Fashion: Environmental Impact of the Global Apparel and Footwear Industries Study (fibre production ~15% of apparel GHG; dyeing & finishing 36%, yarn preparation 28%)",
+      "publisher": "Quantis / ClimateWorks Foundation",
+      "year": 2018,
+      "url": "https://quantis.com/wp-content/uploads/2018/03/measuringfashion_globalimpactstudy_full-report_quantis_cwf_2018a.pdf"
+    },
+    "laitala_2018": {
+      "title": "Does Use Matter? Comparison of Environmental Impacts of Clothing Based on Fiber Type (Laitala, Klepp & Henry), Sustainability 10(7):2524",
+      "publisher": "MDPI Sustainability",
+      "year": 2018,
+      "url": "https://www.mdpi.com/2071-1050/10/7/2524"
+    }
+  },
+  "materials": {
+    "cotton": {
+      "co2e_kg_per_kg": 28,
+      "water_l_per_kg": 3100,
+      "source": "wrap_2012_voc",
+      "note": "WRAP 2012 Table 3. Range: Nordic 2014 uses 13.9 kg CO2e/kg and 5,597 L/kg (green+blue) for cotton (PE International data). Denim and most jersey/twill/pique/poplin/corduroy fabrics map here."
+    },
+    "organic_cotton": {
+      "co2e_kg_per_kg": 27.2,
+      "water_l_per_kg": 1162,
+      "source": "te_2014_organic_cotton",
+      "derived_from": "cotton",
+      "note": "Derived: WRAP cotton minus the fibre-stage difference reported by Textile Exchange 2014: GWP 1,808 -> 978 kg CO2e per t fibre (-0.83 kg/kg), blue water 2,120 -> 182 m3 per t fibre (-1,938 L/kg). Textile Exchange warns the comparison is indicative (two separate studies)."
+    },
+    "polyester": {
+      "co2e_kg_per_kg": 21,
+      "water_l_per_kg": 80,
+      "source": "wrap_2012_voc",
+      "note": "WRAP 2012 Table 3. Range: Nordic 2014 16.9 kg CO2e/kg, 78 L/kg. Fossil-based and sheds microfibres (Laitala 2018) - not captured in CO2e. Satin, fleece, chiffon, 'synthetic' map here."
+    },
+    "recycled_polyester": {
+      "co2e_kg_per_kg": 19.0,
+      "water_l_per_kg": 80,
+      "source": "carbonfact_polyester",
+      "derived_from": "polyester",
+      "note": "Derived: WRAP polyester (21) minus fibre-stage saving: fossil PET 3.12 vs mechanically recycled PET 0.68-1.56 (midpoint 1.12) kg CO2e/kg -> -2.0 kg/kg. FOEN 2017 cites ~32% lower CO2 at fibre level; only the fibre stage (~15% of apparel GHG, Quantis 2018) changes, so the whole-life saving is ~10%. Water: no sourced difference, kept equal to polyester."
+    },
+    "nylon": {
+      "co2e_kg_per_kg": 24,
+      "water_l_per_kg": 80,
+      "source": "wrap_2012_voc",
+      "note": "WRAP 2012 Table 3 'Polyamide (nylon)'. Range: Nordic 2014 20.2 kg CO2e/kg, 78 L/kg."
+    },
+    "acrylic": {
+      "co2e_kg_per_kg": 38,
+      "water_l_per_kg": 130,
+      "source": "wrap_2012_voc",
+      "note": "WRAP 2012 Table 3. Range: Nordic 2014 35.4 kg CO2e/kg, 128 L/kg."
+    },
+    "wool": {
+      "co2e_kg_per_kg": 46,
+      "water_l_per_kg": 2200,
+      "source": "wrap_2012_voc",
+      "note": "WRAP 2012 Table 3. Range: Nordic 2014 44.4 kg CO2e/kg, 16,379 L/kg (green+blue). Cashmere, merino, alpaca, mohair, tweed map here (no separate sourced factor)."
+    },
+    "viscose": {
+      "co2e_kg_per_kg": 30,
+      "water_l_per_kg": 3800,
+      "source": "wrap_2012_voc",
+      "note": "WRAP 2012 Table 3. Range: Nordic 2014 26.4 kg CO2e/kg, 3,829 L/kg. Rayon, modal, lyocell/Tencel, bamboo viscose map here (lyocell is usually lower; no separate sourced factor used)."
+    },
+    "linen": {
+      "co2e_kg_per_kg": 15,
+      "water_l_per_kg": null,
+      "source": "ethical_consumer_2024",
+      "note": "'Flax linen' 15 kg CO2e/kg in the WRAP 2012 figures reproduced by Ethical Consumer 2024. Water: no litres-per-kg figure on the same basis found (European flax is mostly rain-fed; the CELC LCA reports a scarcity-weighted metric, not litres), so water is not estimated. Hemp maps here as the closest sourced bast fibre."
+    },
+    "silk": {
+      "co2e_kg_per_kg": 25,
+      "water_l_per_kg": 24600,
+      "source": "ethical_consumer_2024",
+      "water_source": "astudillo_2015_silk",
+      "note": "25 kg CO2e/kg in the WRAP 2012 figures reproduced by Ethical Consumer 2024. Range: Astudillo et al. 2015 raw silk (India) 51.5 kg CO2e/kg. Water is Astudillo's BLUE water footprint 24.6 m3/kg of raw silk (different basis from WRAP; other studies range from ~445 L/kg handwoven to >25,000 L/kg)."
+    },
+    "polyurethane": {
+      "co2e_kg_per_kg": 20,
+      "water_l_per_kg": 80,
+      "source": "ethical_consumer_2024",
+      "water_proxy_for": "polyester",
+      "note": "'Polyurethane' 20 kg CO2e/kg in the WRAP 2012 figures reproduced by Ethical Consumer 2024. Elastane/spandex/Lycra is ~85% segmented polyurethane (Laitala 2018 Table 1) so it maps here, as do PU / faux / vegan leather. Water: no sourced figure; uses polyester's 80 L/kg as the closest sourced synthetic."
+    },
+    "leather": {
+      "co2e_kg_per_kg": 22.0,
+      "water_l_per_kg": null,
+      "source": "brugnoli_2025_leather",
+      "note": "Brugnoli et al. 2025: 22.0 kg CO2e per kg (industry primary data, cradle-to-gate). Highly allocation-dependent: Roncevich et al. 2026 report 187.1 kg CO2e/kg; LWG 2024 22.48 kg CO2e per m2. We use the primary-data value and flag the range. Water not estimated. Not used for shoes (shoes use per-pair footprints). Suede maps here."
+    },
+    "unknown": {
+      "co2e_kg_per_kg": 21.6,
+      "water_l_per_kg": 3580,
+      "source": "wrap_2012_voc",
+      "note": "Fallback 'average textile'. Derived from WRAP 2012 totals: 38 Mt CO2e and 6,300 million m3 water per year for UK clothing / 1.76 Mt raw materials used. Cross-check: Nordic 2014 'average textile' = 21 kg CO2e/kg and 4,527 L/kg. Also used as the reference fibre for the score (score 50 = a typical garment of the same type in an average textile)."
+    }
+  },
+  "garment_types": {
+    "tshirt": {
+      "weight_kg": 0.15,
+      "weight_source": "ecobalyse",
+      "base_wears": 45,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example T-shirt 150 g; Cotton Inc 2019 US import average 0.16 kg; Sandin 2019 example 110 g. PEFCR 'T-shirts' 45 wears (Sandin 2019: 30; WRAP 2014: 3.3 yr x 25 wear-days = ~82). Tanks, camis, polos and generic tops map here (tanks/camis likely lighter)."
+    },
+    "shirt": {
+      "weight_kg": 0.25,
+      "weight_source": "ecobalyse",
+      "base_wears": 40,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example shirt ('chemise') 250 g. PEFCR 'Shirts and blouses' 40 wears (WRAP 2014: 3.6 yr x 16 = ~58)."
+    },
+    "sweater": {
+      "weight_kg": 0.55,
+      "weight_source": "ecobalyse",
+      "base_wears": 85,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example sweater ('pull') 550 g. PEFCR 'Sweaters and midlayers' 85 wears (WRAP 2014 knitwear: 3.7 yr x 30 = ~111). Hoodies, sweatshirts, cardigans, fleeces map here."
+    },
+    "trousers": {
+      "weight_kg": 0.45,
+      "weight_source": "ecobalyse",
+      "base_wears": 70,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example trousers ('pantalon') 450 g; Cotton Inc 2019 woven cotton bottoms 0.49 kg (men) / 0.38 kg (women). PEFCR 'Pants and shorts' 70 wears. Chinos, slacks, leggings, joggers map here."
+    },
+    "jeans": {
+      "weight_kg": 0.45,
+      "weight_source": "ecobalyse",
+      "base_wears": 70,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example jeans 450 g; Sandin 2019 example 477 g; Carlsson 2011 (via Sandin) typical 700 g. PEFCR 'Pants and shorts' 70 wears (Sandin 2019: 240; WRAP 2014: 3.1 yr x 75 = ~232)."
+    },
+    "shorts": {
+      "weight_kg": 0.45,
+      "weight_source": "ecobalyse",
+      "base_wears": 70,
+      "wears_source": "pefcr_af_2021",
+      "note": "No separate sourced weight: Ecobalyse's 'Pantalon / Short' category (450 g example) and Cotton Inc's HS 620342/620462 both lump shorts with trousers, so shorts are probably over-estimated. PEFCR 'Pants and shorts' 70 wears."
+    },
+    "skirt": {
+      "weight_kg": 0.3,
+      "weight_source": "ecobalyse",
+      "base_wears": 70,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example skirt/dress ('jupe / robe') 300 g. PEFCR 'Dresses, skirts and jumpsuits' 70 wears."
+    },
+    "dress": {
+      "weight_kg": 0.3,
+      "weight_source": "ecobalyse",
+      "base_wears": 70,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example 'jupe / robe' 300 g; Sandin 2019 lined polyester dress 478 g. PEFCR 'Dresses, skirts and jumpsuits' 70 wears (Sandin 2019: 26 uses in Sweden). Jumpsuits map here."
+    },
+    "jacket": {
+      "weight_kg": 0.444,
+      "weight_source": "sandin_2019",
+      "base_wears": 100,
+      "wears_source": "pefcr_af_2021",
+      "note": "Sandin 2019 example jacket 444 g (Ecobalyse lumps coats and jackets at 950 g). PEFCR 'Jackets and coats' 100 wears (Sandin 2019: 140, an unsupported assumption per the authors). Blazers, bombers, denim jackets, vests map here."
+    },
+    "coat": {
+      "weight_kg": 0.95,
+      "weight_source": "ecobalyse",
+      "base_wears": 100,
+      "wears_source": "pefcr_af_2021",
+      "note": "Ecobalyse example coat ('manteau / veste') 950 g. PEFCR 'Jackets and coats' 100 wears. Parkas, puffers, trench coats, overcoats map here."
+    },
+    "sneakers": {
+      "per_pair_co2e_kg": 14.0,
+      "per_pair_source": "cheah_2013_shoes",
+      "base_wears": 100,
+      "wears_source": "pefcr_af_2021",
+      "note": "Cheah et al. 2013 synthetic running shoe 14 +/- 2.7 kg CO2e/pair (PUMA 2008 / Timberland 2009 reported 18-41). PEFCR 'Closed-toed shoes' 100 wears. Loafers, heels, flats, oxfords also map here (closest sourced product). Water not estimated."
+    },
+    "boots": {
+      "per_pair_co2e_kg": 18.65,
+      "per_pair_source": "bodoga_2024_boots",
+      "base_wears": 100,
+      "wears_source": "pefcr_af_2021",
+      "note": "Bodoga et al. 2024 leather safety boots 18.65 kg CO2e/pair (range: GORE-TEX hiking boots 27.1). PEFCR 'Boots' 100 wears. Water not estimated."
+    },
+    "sandals": {
+      "per_pair_co2e_kg": 14.0,
+      "per_pair_source": "cheah_2013_shoes",
+      "base_wears": 50,
+      "wears_source": "pefcr_af_2021",
+      "note": "No sourced per-pair figure for sandals; uses the running-shoe value as the closest sourced product (probably an over-estimate). PEFCR 'Open-toed shoes' 50 wears. Water not estimated."
+    }
+  },
+  "category_default_type": {
+    "top": "tshirt",
+    "bottom": "trousers",
+    "outerwear": "jacket",
+    "dress": "dress",
+    "shoes": "sneakers"
+  },
+  "usage_model": {
+    "life_extension_evidence": {
+      "value": "+33% active life (9 months) -> -27% carbon, -33% water, -22% waste; +10% (3 months) -> -8% carbon, -10% water",
+      "source": "wrap_2012_voc",
+      "note": "WRAP 2012 Table 4. Consistent with footprint-per-wear scaling as 1/wears (+33% wears -> -25% per wear)."
+    },
+    "utilisation_spread_evidence": {
+      "value": "US clothes are worn ~1/4 as often as the global average; global utilisation fell 36% in 15 years",
+      "source": "emf_2017",
+      "note": "Used only to bound the (assumed) utility multiplier to a 4x spread: 0.5x .. 2.0x of the baseline wears."
+    }
+  }
+}

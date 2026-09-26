@@ -9,6 +9,7 @@ import type {
   Outfit,
   Settings,
   SuggestionsResponse,
+  Sustainability,
 } from "./types";
 import { categoryKey, colorToCss } from "./constants";
 
@@ -323,6 +324,11 @@ export const mockApi = {
       suggestions: [],
       message: "Shopping suggestions need the real backend (live product search).",
     };
+  },
+
+  async itemSustainability(itemId: string): Promise<Sustainability & { evaluated_at?: string }> {
+    await sleep(100);
+    throw new Error(`No sustainability estimate for ${itemId} in mock mode`);
   },
 
   async getSettings(): Promise<Settings> {

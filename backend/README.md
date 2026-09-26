@@ -46,7 +46,7 @@ next to real multi-item photos (flat lays, clothes on a bed, mannequin) for Stag
 
 ## Test
 ```bash
-python -m pytest tests -q     # 29 tests on a snapshot copy of the DB, Gemini off (FITCHECK_GEMINI_OFF=1); ~25 s
+python -m pytest tests -q     # 81 tests on a snapshot copy of the DB, Gemini off (FITCHECK_GEMINI_OFF=1); ~25 s
 # test data: $FITCHECK_TEST_DATA_DIR, else ../../fitcheck-testdata if present, else data/. The live closet can be
 # small/empty, so seed a scratch dir once:  FITCHECK_DATA_DIR=../../fitcheck-testdata python scripts/seed_demo_closet.py --reset
 GEMINI_API_KEY=... python scripts/test_gemini.py   # Stage 1+2 on data/test_images (throwaway DB)
@@ -113,6 +113,16 @@ same-type alternatives; BUY → up to 3 pairings from other slots that are thems
 * Limitations: store search only covers Shopify retailers (no Uniqlo/Zara/H&M/Gap); products whose only photos are
   lifestyle / worn shots are dropped (shoes need a product-only shot); color comes from the listing title/tags,
   else fashion-clip zero-shot; menswear is weaker (few men's stores + the compat model); ~25-30 s per first call.
+
+## Sustainability score (`app/sustainability.py`)
+Pure Python (no network / Gemini / DB); factors with sources in `app/data/sustainability_factors.json`, method in
+`docs/SUSTAINABILITY.md`. `evaluate()` calls `score_item(attributes, category, n_new_outfits, top_similarity, price,
+dup_threshold=…, similar_threshold=…)` after the verdict is final and returns/saves it as `sustainability`; it
+never changes the verdict (an estimator error just yields `null`). Suggestions get the same score per product
+(final ranking tiebreaker only). Old evaluations / cached suggestions get it computed on read
+(`GET /api/evaluations/{id}`, suggestions endpoints); closet items that were evaluated expose it at
+`GET /api/items/{id}/sustainability`. Seeded demo items have no fabric → average textile (e.g. white trousers 77 B,
+near-duplicate black cami 44 D). It's an estimate: generic fibre factors, no durability model, modelled wear curve.
 
 ## Known limitations
 * **Menswear is weak in the compat model**: Polyvore is ~0.2% men's items; men's outfits score noisier/lower and

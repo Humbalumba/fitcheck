@@ -29,6 +29,7 @@ import { AttributeEditor, AttributeSummary, diffAttributes } from "@/components/
 import { OutfitCard } from "@/components/OutfitCard";
 import { OutfitModal } from "@/components/OutfitModal";
 import { SuggestionsSection } from "@/components/Suggestions";
+import { SustainabilityCard } from "@/components/Sustainability";
 import { useToast } from "@/components/Toast";
 
 type Step = "start" | "detecting" | "select" | "evaluating" | "result";
@@ -461,6 +462,9 @@ function ResultView({
           </ul>
         )}
       </div>
+
+      {/* Sustainability estimate (informational; hidden for unsupported items such as accessories) */}
+      <SustainabilityCard s={r.sustainability} />
 
       {/* Live-shopping picks: fetched after the verdict renders (SKIP -> alternatives, BUY -> pairings) */}
       {!unsupported && (buy || decision === "SKIP") && (

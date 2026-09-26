@@ -169,6 +169,8 @@ def test_skip_alternatives_offline(client, candidates, offline_suggest):
         assert "outfit" in s["reason"] and "$" in s["reason"]
         assert s["image_url"].startswith("/media/suggest/") and s["product_url"].startswith("https://")
         assert s["outfits"] and all(any(i["id"] == s["id"] for i in o["items"]) for o in s["outfits"])
+        sus = s["sustainability"]
+        assert sus["supported"] and 0 <= sus["score"] <= 100 and sus["garment_type"] == "tshirt"
     names = [s["name"] for s in d["suggestions"]]
     assert "Black Cami (near-duplicate)" not in names
     assert any(x["name"] == "Black Cami (near-duplicate)" for x in d["rejected"])

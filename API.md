@@ -127,9 +127,38 @@ trousers candidate against the Polyvore demo closet):
   "scorer": "outfit_transformer",
   "supported": true,
   "message": null,
+  "sustainability": {                         // informational estimate; NEVER affects the verdict (see below)
+    "supported": true, "is_estimate": true, "score": 77, "grade": "B", "label": "Good",
+    "reasons": ["Unlocks 42 outfits, so its ~9.7 kg CO2e is spread over ~130 expected wears (~0.07 kg per wear).",
+                "Material unknown, so we assumed an average textile (~22 kg CO2e per kg)."],
+    "footprint_kg_co2e": 9.72, "water_l": 1611, "water_complete": true, "expected_wears": 130.0,
+    "per_wear_kg_co2e": 0.0748, "per_wear_water_l": 12.4, "cost_per_wear": 0.35,
+    "garment_type": "trousers", "footprint_basis": "per_kg", "weight_kg": 0.45,
+    "materials": [...], "material_parse": {...}, "components": {...}, "methodology": "...", "sources": [...], "version": "..."
+  },
   "evaluation_id": "ev_1e046c19e631"
 }
 ```
+**Sustainability.** `app/sustainability.py::score_item(candidate attributes, category, total_new_outfits,
+redundancy.top_similarity, price)` with the redundancy thresholds from settings, computed after outfits and
+redundancy are known and saved with the evaluation. Footprint = typical garment weight × per-kg CO2e/water of the
+material mix (WRAP 2012 etc.; shoes use per-pair LCA values); expected wears = PEFCR default wears for the type ×
+utility(new outfits) × redundancy factor (0.75 similar / 0.5 near-duplicate); score 0-100 compares the per-wear
+footprint with a typical item of that type (50 = typical, +30 per halving); grade A ≥ 80 … E < 35. Unknown material
+→ average textile. Accessories: `{"supported": false, "score": null, ...}` (UI hides the card); if the estimator ever
+fails the field is `null`. Method + sources: `docs/SUSTAINABILITY.md`. The seeded black cami (near-duplicate, 30
+outfits, $28) gets 44 D ("~3.2 kg CO2e over only ~39 expected wears").
+
+## GET /api/evaluations/{evaluation_id}
+A saved evaluation, same shape as the `POST /api/evaluate` response (+ `created_at`). Evaluations saved before the
+sustainability score existed get `sustainability` computed on read (pure Python, using the stored settings snapshot).
+`404` if unknown.
+
+## GET /api/items/{item_id}/sustainability
+The `sustainability` object for an item that went through "Should I buy?" (e.g. bought → now in the closet): the
+item's **current** attributes (so a corrected fabric counts) + new outfits / redundancy / price stored with its latest
+evaluation, plus `evaluation_id`, `evaluated_at`, `n_new_outfits_at_evaluation`. `404` if never evaluated (the
+closet sheet then shows nothing).
 **Scores.** `score` = *calibrated* compatibility in [0,1] (use this in the UI, e.g. as a %): 0.5 means exactly
 the balanced cutoff for an outfit of that size, 1.0 = a perfect raw score. `raw_score` = the OutfitTransformer
 probability; raw scores are NOT comparable across outfit sizes (2 items ≈ 0.15 cutoff, 3 ≈ 0.35, 4+ ≈ 0.6),
@@ -212,11 +241,16 @@ on CPU (Gemini ~4 s, search ~3 s, fetch ~9-14 s, pipeline ~10 s).
     "outfit_count_by_template": {"top+bottom+outerwear+shoes": 40, "dress+outerwear+shoes": 3}, "template_names": ["..."],
     "redundancy": {"level": "none", "top_similarity": 0.71, "closest": "black jacket"},
     "similarity_to_candidate": null,
+    "sustainability": { /* same object as in /api/evaluate: 77, "B", ... for this vest */ },
     "outfits": [ /* up to 12 Outfit objects, ones containing the candidate first */ ]
   }],
   "rejected": [{"name": "...", "retailer": "Fashion Nova", "reason": "no clean photo of the garment (lifestyle / worn shot)"}]
 }
 ```
+Each suggestion's `sustainability` uses its own attributes/material (listing title + tags; the product title decides
+the garment type), its own new-outfit count and redundancy. It only breaks exact ties in the ranking. Cached results
+from before the score existed get it computed on read.
+
 Errors: `404` unknown evaluation; `503 {"detail": "...quota..."}` when Gemini is exhausted/unavailable (nothing
 cached, the UI shows a friendly note + Retry); `500` otherwise.
 

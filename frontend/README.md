@@ -6,9 +6,9 @@ Mobile-first Next.js 16 (App Router, TypeScript) + Tailwind v4 app for FitCheck:
 ## Screens
 | Route | What |
 |---|---|
-| `/closet` | Grid of closet cut-outs, category chips with counts, tap an item → edit attributes / delete |
+| `/closet` | Grid of closet cut-outs, category chips with counts, tap an item → edit attributes / delete; items bought via "Should I buy?" also show their sustainability grade (`GET /api/items/{id}/sustainability`) |
 | `/add` | Onboarding: snap/upload photos of clothes laid flat. Photos are queued and run through `POST /api/detect` (purpose=closet) one at a time; boxes overlaid on the photo, editable item cards with include checkboxes, "Add N items to closet" |
-| `/buy` | Snap one item → detect (purpose=candidate) → pick which box if several → price (pre-filled from tag, required otherwise) → `POST /api/evaluate` → BUY/SKIP verdict, new-outfit count, cost/outfit, value score, redundancy card, outfits grouped by template, "I bought it — add to closet". Under the verdict, `SuggestionsSection` calls `POST /api/evaluations/{id}/suggestions` after render: "Better picks instead" (SKIP) / "Pairs well with this" (BUY) — up to 3 live products with photo, price, reason, verdict chip, "View at <retailer>" link; tapping a card opens its outfits in `OutfitModal` |
+| `/buy` | Snap one item → detect (purpose=candidate) → pick which box if several → price (pre-filled from tag, required otherwise) → `POST /api/evaluate` → BUY/SKIP verdict, new-outfit count, cost/outfit, value score, redundancy card, outfits grouped by template, "I bought it — add to closet". Under the verdict, `SuggestionsSection` calls `POST /api/evaluations/{id}/suggestions` after render: "Better picks instead" (SKIP) / "Pairs well with this" (BUY) — up to 3 live products with photo, price, reason, verdict chip, "View at <retailer>" link; tapping a card opens its outfits in `OutfitModal`. A compact `SustainabilityCard` sits right under the verdict (score + A-E grade, "~X kg CO₂e over ~N expected wears = Y kg per wear", water, 2 reasons, "Estimate" info toggle; hidden when unsupported) and suggestion cards show a leaf chip with score · grade |
 | `/settings` | Budget, style goal, occasions + threshold sliders (`GET/PUT /api/settings`) |
 
 Header pill polls `GET /api/health` every 15 s (Live / Live (limited) = stub scorer or no Gemini / Offline / Mock).
@@ -58,7 +58,7 @@ Fixture closet of 15 items (SVG garments), fake detection (2–4 items per photo
 - `src/lib/api.ts` — typed API client (real/mock switch, `mediaUrl()` for `/media/...` paths)
 - `src/lib/mock.ts` — mock backend
 - `src/lib/types.ts` — API contract types
-- `src/components/` — `PhotoWithBoxes` (bbox overlay, `[ymin,xmin,ymax,xmax]` 0–1000), `AttributeEditor`, `OutfitCard`, `OutfitModal`, `Suggestions` (shopping picks), `FilePicker`, UI primitives
+- `src/components/` — `PhotoWithBoxes` (bbox overlay, `[ymin,xmin,ymax,xmax]` 0–1000), `AttributeEditor`, `OutfitCard`, `OutfitModal`, `Suggestions` (shopping picks), `Sustainability` (card, leaf chip, closet-sheet row), `FilePicker`, UI primitives
 - `src/app/{closet,add,buy,settings}/page.tsx` — screens
 
 ## Screenshots

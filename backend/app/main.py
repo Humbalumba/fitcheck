@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config, db, gemini, pipeline, suggest
-from .evaluate import evaluate as run_evaluate
+from .evaluate import evaluate as run_evaluate, sustainability_for, with_sustainability
 from .scoring import get_scorer, scorer_kind
 from .vectors import closet_index
 
@@ -152,6 +152,37 @@ def evaluate(body: EvaluateBody):
     return res
 
 
+@app.get("/api/evaluations/{evaluation_id}")
+def get_evaluation(evaluation_id: str):
+    """A saved evaluation (same shape as POST /api/evaluate). Evaluations saved before the sustainability score
+    existed get it computed on read (pure Python, no model calls)."""
+    ev = db.get_evaluation(evaluation_id)
+    if ev is None:
+        raise HTTPException(404, f"evaluation {evaluation_id} not found")
+    res = with_sustainability(ev["results"])
+    res = {k: v for k, v in res.items() if k != "settings"}
+    return {**res, "evaluation_id": evaluation_id, "created_at": ev.get("created_at")}
+
+
+@app.get("/api/items/{item_id}/sustainability")
+def item_sustainability(item_id: str):
+    """Sustainability from the item's latest saved evaluation (e.g. a closet item bought via "Should I buy?").
+    The stats (new outfits, redundancy) are as of that evaluation. 404 if the item was never evaluated."""
+    item = _item_or_404(item_id)
+    ev = db.latest_evaluation_for_item(item_id)
+    sus = None
+    if ev:  # current attributes (e.g. a fabric fixed later) + the outfit/redundancy stats stored with the evaluation
+        r = ev["results"]
+        price = (r.get("value") or {}).get("price")
+        sus = sustainability_for(item, r.get("total_new_outfits") or 0, (r.get("redundancy") or {}).get("top_similarity"),
+                                 price if price is not None else (item.get("attributes") or {}).get("price"),
+                                 r.get("settings") or db.get_settings())
+    if not sus:
+        raise HTTPException(404, f"no sustainability estimate for item {item_id} (never evaluated)")
+    return {**sus, "evaluation_id": ev["id"], "evaluated_at": ev.get("created_at"),
+            "n_new_outfits_at_evaluation": ev["results"].get("total_new_outfits")}
+
+
 @app.post("/api/evaluations/{evaluation_id}/suggestions")
 def evaluation_suggestions(evaluation_id: str, refresh: bool = False):
     """Live-shopping suggestions for an evaluation (SKIP -> better alternatives, BUY -> pairings). One grounded
@@ -172,7 +203,7 @@ def get_evaluation_suggestions(evaluation_id: str):
     cached = db.get_suggestions(evaluation_id)
     if cached is None:
         raise HTTPException(404, f"no suggestions yet for evaluation {evaluation_id}")
-    return {**cached, "cached": True}
+    return {**suggest.add_sustainability(cached), "cached": True}
 
 
 @app.post("/api/candidate/{item_id}/add-to-closet")

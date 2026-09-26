@@ -6,6 +6,7 @@ import type {
   Item,
   Settings,
   SuggestionsResponse,
+  Sustainability,
 } from "./types";
 import { mockApi } from "./mock";
 
@@ -140,6 +141,12 @@ const realApi = {
       `/api/evaluations/${encodeURIComponent(evaluationId)}/suggestions${refresh ? "?refresh=true" : ""}`,
       { method: "POST", timeoutMs: 150_000 },
     ),
+
+  /** Sustainability from an item's latest saved evaluation (404 if it was never evaluated). */
+  itemSustainability: (itemId: string) =>
+    request<Sustainability & { evaluated_at?: string }>(`/api/items/${encodeURIComponent(itemId)}/sustainability`, {
+      timeoutMs: 10_000,
+    }),
 
   getSettings: () => request<Settings>("/api/settings"),
 

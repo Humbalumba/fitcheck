@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from . import db
 from .pipeline import item_to_api
+from .sustainability import score_item
 from .scoring import calibrate, calibration_table, ensure_compat_embeddings, score_outfits_cached, scorer_kind
 from .vectors import closet_index, ensure_fclip
 
@@ -287,6 +288,29 @@ def compute_value_and_verdict(*, n_outfits: int, weighted_outfits: float, counts
     return value, {"decision": decision, "reasons": reasons}
 
 
+# ------------------------------------------------------------------ sustainability (informational; never changes the verdict)
+def sustainability_for(item: dict, n_new_outfits, top_similarity, price, settings: dict) -> dict | None:
+    """app.sustainability.score_item with the app's redundancy thresholds. None if the estimator fails."""
+    try:
+        return score_item(item.get("attributes") or {}, item.get("category"), n_new_outfits, top_similarity, price,
+                          dup_threshold=float(settings.get("redundancy_duplicate_threshold", 0.88)),
+                          similar_threshold=float(settings.get("redundancy_similar_threshold", 0.80)))
+    except Exception:  # pure-Python estimate; must never break an evaluation
+        log.exception("sustainability estimate failed for %s", item.get("id"))
+        return None
+
+
+def with_sustainability(res: dict) -> dict:
+    """Saved evaluations from before the score existed: compute it on read (pure Python, microseconds), using the
+    settings snapshot stored with the evaluation."""
+    if "sustainability" in res or not res.get("item"):
+        return res
+    settings = res.get("settings") or db.get_settings()
+    return {**res, "sustainability": sustainability_for(
+        res["item"], res.get("total_new_outfits") or 0, (res.get("redundancy") or {}).get("top_similarity"),
+        (res.get("value") or {}).get("price"), settings)}
+
+
 # ------------------------------------------------------------------ Stage 7
 def evaluate(item_id: str, price: float | None = None) -> dict:
     cand = db.get_item(item_id)
@@ -321,6 +345,7 @@ def evaluate(item_id: str, price: float | None = None) -> dict:
                "outfit_count_by_template": {}, "total_new_outfits": 0,
                "value": {"price": price, "cost_per_outfit": None, "weighted_outfits": 0.0, "value_score": None},
                "verdict": {"decision": "UNSUPPORTED", "reasons": [msg]}}
+        res["sustainability"] = sustainability_for(cand, 0, red["top_similarity"], price, settings)  # accessory: unsupported
         res["evaluation_id"] = db.save_evaluation(item_id, price, "UNSUPPORTED", res, [])
         return res
 
@@ -347,6 +372,8 @@ def evaluate(item_id: str, price: float | None = None) -> dict:
            "calibration": {"strictness": settings["compat_threshold"],
                            "raw_cutoffs_by_size": calibration_table(settings["compat_threshold"])},
            "outfits_truncated": len(out_list) < n, "outfit_count_by_template": counts, "total_new_outfits": n,
-           "value": value, "verdict": verdict}
+           "value": value, "verdict": verdict,
+           # after n + redundancy are known; informational only (the verdict above is already final)
+           "sustainability": sustainability_for(cand, n, red["top_similarity"], price, settings)}
     res["evaluation_id"] = db.save_evaluation(item_id, price, verdict["decision"], res, outfits)
     return res

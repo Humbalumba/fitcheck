@@ -9,6 +9,7 @@ import { CATEGORIES, categoryKey, categoryLabel } from "@/lib/constants";
 import { money, titleCase } from "@/lib/format";
 import { Button, Chip, EmptyState, ErrorBanner, ItemImage, PageTitle, Sheet, ColorDot } from "@/components/ui";
 import { AttributeEditor, diffAttributes } from "@/components/AttributeEditor";
+import { ItemSustainability } from "@/components/Sustainability";
 import { useToast } from "@/components/Toast";
 
 export default function ClosetPage() {
@@ -234,6 +235,7 @@ function ItemSheet({
       {item.attributes?.description && (
         <p className="text-sm text-black/60 mb-4">{String(item.attributes.description)}</p>
       )}
+      <ItemSustainability key={item.id} itemId={item.id} />
       <AttributeEditor value={draft} onChange={setDraft} />
     </Sheet>
   );

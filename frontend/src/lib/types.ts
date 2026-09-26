@@ -67,6 +67,28 @@ export interface Outfit {
   score: number;
 }
 
+/** Sustainability estimate (app/sustainability.py). Informational only; never changes the verdict. */
+export interface Sustainability {
+  supported: boolean;
+  is_estimate: boolean;
+  score: number | null; // 0-100
+  grade: "A" | "B" | "C" | "D" | "E" | string | null;
+  label: string | null;
+  reasons: string[];
+  footprint_kg_co2e: number | null;
+  water_l: number | null;
+  water_complete?: boolean;
+  expected_wears: number | null;
+  per_wear_kg_co2e: number | null;
+  per_wear_water_l: number | null;
+  cost_per_wear: number | null;
+  garment_type: string | null;
+  footprint_basis?: "per_kg" | "per_pair" | string;
+  methodology?: string;
+  sources?: string[];
+  [key: string]: unknown;
+}
+
 export interface EvaluateResponse {
   item: Item;
   template_names: string[];
@@ -92,6 +114,7 @@ export interface EvaluateResponse {
   supported?: boolean;
   message?: string | null;
   scorer?: string;
+  sustainability?: Sustainability | null;
   evaluation_id: string;
 }
 
@@ -144,6 +167,7 @@ export interface Suggestion {
   template_names: string[];
   redundancy: { level: string; top_similarity?: number | null; closest?: string | null };
   similarity_to_candidate?: number | null;
+  sustainability?: Sustainability | null;
   outfits: Outfit[];
 }
 

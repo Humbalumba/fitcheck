@@ -7,6 +7,7 @@ import type { Suggestion, SuggestionsResponse } from "@/lib/types";
 import { cn, money, titleCase } from "@/lib/format";
 import { Card } from "./ui";
 import { OutfitModal } from "./OutfitModal";
+import { LeafChip } from "./Sustainability";
 
 const TITLES: Record<string, { title: string; sub: string }> = {
   SKIP: {
@@ -212,7 +213,10 @@ function SuggestionCard({ s, onOpen }: { s: Suggestion; onOpen?: () => void }) {
         <div className="text-xs text-black/50 mt-0.5 truncate">
           {[s.brand, s.retailer && s.retailer !== s.brand ? s.retailer : null].filter(Boolean).join(" · ")}
         </div>
-        <div className="text-lg font-bold tabular-nums mt-1">{money(s.price, s.currency || "USD")}</div>
+        <div className="flex items-center gap-2 mt-1">
+          <span className="text-lg font-bold tabular-nums">{money(s.price, s.currency || "USD")}</span>
+          <LeafChip s={s.sustainability} />
+        </div>
         <p className="text-xs text-black/65 leading-snug mt-1">{s.reason}</p>
         <div className="mt-auto pt-2">
           <a

@@ -40,7 +40,7 @@ import numpy as np
 from PIL import Image
 
 from . import config, db, gemini
-from .evaluate import (SUPPORTED, compute_value_and_verdict, generate_outfits, item_name, redundancy,
+from .evaluate import (SUPPORTED, compute_value_and_verdict, sustainability_for, generate_outfits, item_name, redundancy,
                        redundancy_text, spent_this_month, text_embeddings)
 from .pipeline import item_to_api, load_image
 from .segment import CATEGORY_CLASSES, _clean, guess_category_from_label, segment_crop, white_bg_cutout
@@ -654,7 +654,25 @@ def score_suggestion(sug: dict, cand: dict, closet: list[dict], mode: str, setti
     sim_cand = similarity_to(sug, cand, settings) if sug.get("category") == cand.get("category") else None
     return {"outfits": outfits, "templates": templates, "counts": counts, "n": n, "with_candidate": with_cand,
             "redundancy": red, "top_match": top_item, "value": value, "verdict": verdict,
-            "similarity_to_candidate": sim_cand}
+            "similarity_to_candidate": sim_cand,
+            "sustainability": sustainability_for(_sus_item(sug, (sug.get("attributes") or {}).get("description")),
+                                                 n, red["top_similarity"], price, settings)}
+
+
+def _sus_item(it: dict, name: str | None) -> dict:
+    """For shop products the title is the most specific garment-type signal ("... Boatneck Sweater" whose planned
+    subcategory was just "top"), so the sustainability estimate resolves the type from title + subcategory."""
+    a = dict(it.get("attributes") or {})
+    if name:
+        from .sustainability import resolve_garment_type
+        typ, how = resolve_garment_type({"subcategory": name}, it.get("category") or a.get("category"))
+        if typ and how == "subcategory":  # the title names a garment type -> trust it over the planned subcategory
+            a["subcategory"] = name
+    return {**it, "attributes": a}
+
+
+def _sus_score(s: dict) -> int:
+    return ((s.get("sustainability") or {}).get("score") or 0)
 
 
 def _reason(mode: str, s: dict, cand: dict, cand_eval: dict) -> str:
@@ -707,11 +725,11 @@ def rank(mode: str, scored: list[tuple[dict, dict, dict]], cand: dict, cand_eval
             keep.append((p, it, s))
     if mode == "alternatives":
         keep.sort(key=lambda x: (x[2]["verdict"]["decision"] == "BUY", x[2]["n"], x[2]["value"].get("value_score") or 0,
-                                 -(x[2]["value"].get("cost_per_outfit") or 1e9)), reverse=True)
+                                 -(x[2]["value"].get("cost_per_outfit") or 1e9), _sus_score(x[2])), reverse=True)
         top = keep[:MAX_RETURNED]
     else:
-        keep.sort(key=lambda x: (x[2]["with_candidate"], x[2]["n"], x[2]["value"].get("value_score") or 0),
-                  reverse=True)
+        keep.sort(key=lambda x: (x[2]["with_candidate"], x[2]["n"], x[2]["value"].get("value_score") or 0,
+                                 _sus_score(x[2])), reverse=True)  # sustainability = final tiebreaker only
         top, per_cat = [], collections.Counter()
         for x in keep:  # at most 2 per slot while other qualifying slots exist
             if per_cat[x[1]["category"]] < MAX_PER_CATEGORY:
@@ -751,6 +769,7 @@ def _suggestion_to_api(mode: str, p: dict, it: dict, s: dict, cand: dict, cand_e
         "template_names": s["templates"],
         "redundancy": {"level": red["level"], "top_similarity": red["top_similarity"],
                        "closest": item_name(s["top_match"]) if s["top_match"] else None},
+        "sustainability": s.get("sustainability"),
         "similarity_to_candidate": (round(s["similarity_to_candidate"], 4)
                                     if s.get("similarity_to_candidate") is not None else None),
         "outfits": [{"template": o["template"], "score": round(o["score"], 4),
@@ -895,6 +914,23 @@ def delete_suggestion_items_by_id(it: dict) -> None:
             Path(it[k]).unlink(missing_ok=True)
 
 
+def add_sustainability(result: dict) -> dict:
+    """Cached suggestions from before the sustainability score: compute it on read from the stored numbers."""
+    sugs = result.get("suggestions") or []
+    if all("sustainability" in s for s in sugs):
+        return result
+    settings = db.get_settings()
+    out = []
+    for s in sugs:
+        if "sustainability" not in s:
+            it = s.get("item") or {"attributes": {}, "category": s.get("category")}
+            s = {**s, "sustainability": sustainability_for(
+                _sus_item(it, s.get("name")), s.get("total_new_outfits") or 0, (s.get("redundancy") or {}).get("top_similarity"),
+                s.get("price"), settings)}
+        out.append(s)
+    return {**result, "suggestions": out}
+
+
 def get_or_create(eid: str, refresh: bool = False) -> dict:
     """Cached per evaluation; concurrent requests for the same evaluation wait for the first (1 Gemini call)."""
     with _locks_guard:
@@ -903,7 +939,7 @@ def get_or_create(eid: str, refresh: bool = False) -> dict:
         if not refresh:
             cached = db.get_suggestions(eid)
             if cached is not None:
-                return {**cached, "cached": True}
+                return {**add_sustainability(cached), "cached": True}
         res = compute(eid)
         if res.get("mode"):
             db.save_suggestions(eid, res["mode"], res)
