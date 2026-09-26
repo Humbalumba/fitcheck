@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Phase = "idle" | "open" | "enter";
+
+const AUTO_START_MS = 700;
 
 const WOOD =
   "repeating-linear-gradient(92deg, rgba(0,0,0,0) 0px, rgba(0,0,0,0.06) 2px, rgba(0,0,0,0) 5px, rgba(255,255,255,0.03) 9px, rgba(0,0,0,0) 13px), linear-gradient(180deg, #8d6a4b 0%, #7a5a3f 45%, #6a4c34 100%)";
@@ -12,20 +14,24 @@ export function OpeningAnimation({ href = "/closet" }: { href?: string }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>("idle");
   const timers = useRef<number[]>([]);
+  const started = useRef(false);
 
+  const enter = useCallback(() => {
+    if (started.current) return;
+    started.current = true;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setPhase("open"); // 1. doors swing open while the dark inside fades to the home page
+    timers.current.push(window.setTimeout(() => setPhase("enter"), reduced ? 50 : 900)); // 2. zoom in
+    timers.current.push(window.setTimeout(() => router.push(href), reduced ? 150 : 2100)); // 3. navigate
+  }, [router, href]);
+
+  // Plays by itself: the doors stay shut for a beat, then open. Tapping the doors starts it right away.
   useEffect(() => {
     router.prefetch(href);
     const t = timers.current;
+    t.push(window.setTimeout(enter, AUTO_START_MS));
     return () => t.forEach(clearTimeout);
-  }, [router, href]);
-
-  const enter = () => {
-    if (phase !== "idle") return;
-    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    setPhase("open"); // 1. doors swing open
-    timers.current.push(window.setTimeout(() => setPhase("enter"), reduced ? 50 : 700)); // 2. zoom in
-    timers.current.push(window.setTimeout(() => router.push(href), reduced ? 150 : 1900)); // 3. navigate
-  };
+  }, [router, href, enter]);
 
   const cls = ["relative min-h-dvh overflow-hidden bg-[#2e241d]"];
   if (phase !== "idle") cls.push("wardrobe-open");
@@ -38,12 +44,6 @@ export function OpeningAnimation({ href = "/closet" }: { href?: string }) {
           <span className="grid place-items-center size-10 rounded-xl bg-[#f1ebe0] text-[#16161a] text-base font-bold">F✓</span>
           FitCheck
         </div>
-        <button
-          onClick={enter}
-          className="rounded-full bg-[#f1ebe0] px-7 h-14 text-xl text-[#161412]"
-        >
-          Enter your closet →
-        </button>
       </div>
 
       <div className="wardrobe-stage relative z-10 flex justify-center mt-10">
@@ -51,9 +51,10 @@ export function OpeningAnimation({ href = "/closet" }: { href?: string }) {
           <div className="relative w-[min(78vw,340px)] sm:w-[360px]">
             <div className="mx-[-4%] h-5 rounded-t-md bg-[#4e3726]" />
             <div className="relative aspect-[0.78] p-[4%]" style={{ background: WOOD }}>
-              {/* lit interior revealed behind the doors */}
-              <div className="absolute inset-[4%] bg-[radial-gradient(90%_70%_at_50%_20%,#f7f4ee_0%,#e7e2da_60%,#d3ccc1_100%)] shadow-[inset_0_10px_30px_rgba(0,0,0,0.25)]">
+              {/* inside of the closet: starts black, fades into the home page as the doors open */}
+              <div className="absolute inset-[4%] overflow-hidden bg-paper shadow-[inset_0_10px_30px_rgba(0,0,0,0.18)]">
                 <div className="absolute left-[4%] right-[4%] top-[12%] h-[5px] rounded-full bg-[#b8935c]" />
+                <div className="wardrobe-dark absolute inset-0 bg-black" />
               </div>
               {/* doors: perspective must sit on their direct parent */}
               <button
@@ -76,7 +77,7 @@ export function OpeningAnimation({ href = "/closet" }: { href?: string }) {
       <div
         aria-hidden
         className={`pointer-events-none absolute inset-0 z-30 bg-paper transition-opacity duration-500 ${
-          phase === "enter" ? "opacity-100 delay-[650ms]" : "opacity-0"
+          phase === "enter" ? "opacity-100 delay-[600ms]" : "opacity-0"
         }`}
       />
     </div>

@@ -190,6 +190,9 @@ input[type="range"] {
 .wardrobe-zoom { transition: transform 1.15s cubic-bezier(0.7, 0, 0.3, 1); }
 .wardrobe-enter .wardrobe-zoom { transform: scale(6); }
 
+.wardrobe-dark { transition: opacity 1s ease 0.2s; }
+.wardrobe-open .wardrobe-dark { opacity: 0; }
+
 .wardrobe-fade { transition: opacity 0.4s ease, transform 0.4s ease; }
 .wardrobe-open .wardrobe-fade { opacity: 0; transform: translateY(-8px); }
 
@@ -201,7 +204,7 @@ input[type="range"] {
 .arrive { animation: arrive 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) backwards; }
 
 @media (prefers-reduced-motion: reduce) {
-  .wardrobe-door, .wardrobe-zoom { transition-duration: 0.01s; }
+  .wardrobe-door, .wardrobe-zoom, .wardrobe-dark { transition-duration: 0.01s; transition-delay: 0s; }
 }
 
 @media (prefers-reduced-motion: reduce) {

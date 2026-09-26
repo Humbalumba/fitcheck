@@ -23,7 +23,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="min-h-dvh flex flex-col">
         <header className="sticky top-0 z-30 bg-paper/85 backdrop-blur border-b border-black/5">
           <div className="mx-auto max-w-2xl lg:max-w-6xl px-4 lg:px-8 h-14 flex items-center">
-            <Link href="/closet" className="flex items-center gap-2 font-semibold tracking-tight text-[17px]">
+            <Link href="/" aria-label="FitCheck home" className="flex items-center gap-2 font-semibold tracking-tight text-[17px]">
               <span className="grid place-items-center size-8 rounded-xl bg-ink text-white text-sm font-bold">F✓</span>
               FitCheck
             </Link>
