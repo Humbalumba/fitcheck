@@ -10,10 +10,16 @@ import pytest
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 _tmp = Path(tempfile.mkdtemp(prefix="fitcheck_test_"))
-for name in ("fitcheck.db", "closet.faiss", "closet.ids.npy"):
-    src = BACKEND / "data" / name
-    if src.exists():
-        shutil.copy(src, _tmp / name)
+import sqlite3  # noqa: E402
+
+if (BACKEND / "data" / "fitcheck.db").exists():  # consistent snapshot incl. WAL contents
+    src = sqlite3.connect(BACKEND / "data" / "fitcheck.db")
+    dst = sqlite3.connect(_tmp / "fitcheck.db")
+    src.backup(dst)
+    dst.close(); src.close()
+for name in ("closet.faiss", "closet.ids.npy"):
+    if (BACKEND / "data" / name).exists():
+        shutil.copy(BACKEND / "data" / name, _tmp / name)
 os.environ["FITCHECK_DB"] = str(_tmp / "fitcheck.db")
 os.environ["FITCHECK_FAISS"] = str(_tmp / "closet.faiss")
 

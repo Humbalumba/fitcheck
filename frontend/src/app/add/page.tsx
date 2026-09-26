@@ -241,7 +241,7 @@ function BatchCard({
                   .filter((it) => b.include[it.id])
                   .slice(0, 6)
                   .map((it) => (
-                    <ItemImage key={it.id} src={it.cutout_url} className="size-9 rounded-full ring-2 ring-emerald-50" pad={false} />
+                    <ItemImage key={it.id} src={it.image_url || it.cutout_url} className="size-9 rounded-full ring-2 ring-emerald-50" pad={false} />
                   ))}
               </div>
             </div>
@@ -367,7 +367,7 @@ function DetectedCard({
           {included && <Check className="size-4" strokeWidth={3} />}
         </button>
         <div className="relative">
-          <ItemImage src={item.cutout_url} className="size-16 rounded-xl border border-black/5" pad={false} />
+          <ItemImage src={item.image_url || item.cutout_url} className="size-16 rounded-xl border border-black/5" pad={false} />
           <span
             className="absolute -top-1.5 -left-1.5 grid place-items-center size-5 rounded-full text-[10px] font-bold text-white ring-2 ring-white"
             style={{ background: boxColor(index) }}

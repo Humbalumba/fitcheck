@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 TEST_IMAGES = Path(__file__).resolve().parent.parent / "data" / "test_images"
-TEMPLATES = {"top+bottom", "top+bottom+outerwear", "dress", "dress+outerwear"}
+TEMPLATES = {"top+bottom", "top+bottom+outerwear", "dress", "dress+outerwear", "top+bottom+shoes",
+             "top+bottom+outerwear+shoes", "dress+shoes", "dress+outerwear+shoes"}
 
 
 def ev(client, item_id, price=None):
@@ -25,6 +26,12 @@ def check_shape(res):
     assert res["total_new_outfits"] == sum(res["outfit_count_by_template"].values())
     for o in res["outfits"]:
         assert o["template"] in TEMPLATES and 0 <= o["score"] <= 1
+        assert o["template"] in res["template_names"]
+        assert o["n_items"] == len(o["items"]) == o["template"].count("+") + 1
+        cats = [i["category"] for i in o["items"]]
+        assert len(cats) == len(set(cats)), "never two items of the same slot"
+        if o["raw_score"] is not None:
+            assert 0 <= o["raw_score"] <= 1
         assert any(i["id"] == res["item"]["id"] for i in o["items"])
         for i in o["items"]:
             assert i["image_url"].startswith("/media/")
@@ -48,61 +55,103 @@ def test_closet_listing(client):
     assert r.status_code == 200 and r.headers["content-type"].startswith("image/")
 
 
-def test_near_duplicate_navy_tshirt(client, candidates):
-    res = ev(client, candidates["navy_tshirt_mens"], price=18)
+def test_near_duplicate_top(client, candidates):
+    res = ev(client, candidates["near_dup_top"], price=28)
     check_shape(res)
     assert res["redundancy"]["level"] == "near_duplicate"
-    assert res["redundancy"]["matches"][0]["item"]["attributes"]["primary_color"] == "navy"
+    assert res["redundancy"]["matches"][0]["item"]["attributes"]["subcategory"] == "tank top"
     assert res["verdict"]["decision"] == "SKIP"
     assert any("Very similar" in r for r in res["verdict"]["reasons"])
 
 
-def test_distinct_top_is_buy(client, candidates):
-    res = ev(client, candidates["olive_shirt_mens"], price=35)
+def test_bottom_is_buy_with_shoes_layer(client, candidates):
+    res = ev(client, candidates["bottom_womens"], price=45)
     check_shape(res)
-    assert res["redundancy"]["level"] == "none"
-    assert res["template_names"] == ["top+bottom", "top+bottom+outerwear"]
+    assert res["redundancy"]["level"] in ("none", "similar")
+    assert res["template_names"] == ["top+bottom+shoes", "top+bottom+outerwear+shoes"]
     assert res["total_new_outfits"] >= 3
     assert res["verdict"]["decision"] == "BUY"
-    assert res["value"]["cost_per_outfit"] == pytest.approx(35 / res["total_new_outfits"], abs=0.01)
-    # men's shirt should only be paired with mens/unisex items (match_gender_presentation default)
+    assert res["value"]["cost_per_outfit"] == pytest.approx(45 / res["total_new_outfits"], abs=0.01)
+    # shoes are a completing layer: at most one outfit per (top, bottom[, outerwear]) base look
+    bases = [tuple(sorted(i["id"] for i in o["items"] if i["category"] != "shoes")) for o in res["outfits"]]
+    assert len(bases) == len(set(bases))
+    assert res["calibration"]["raw_cutoffs_by_size"] == {"2": 0.15, "3": 0.35, "4+": 0.6}
+
+
+def test_mens_top_pairs_with_mens_only(client, candidates):
+    res = ev(client, candidates["top_mens"], price=28)
+    check_shape(res)
     for o in res["outfits"]:
         assert all(i["attributes"]["gender_presentation"] in ("mens", "unisex") for i in o["items"])
 
 
 def test_expensive_item_skips(client, candidates):
-    res = ev(client, candidates["olive_shirt_mens"], price=500)
+    res = ev(client, candidates["bottom_womens"], price=900)
     assert res["verdict"]["decision"] == "SKIP"
     assert res["value"]["cost_per_outfit"] > 10
 
 
 def test_outerwear_templates(client, candidates):
-    res = ev(client, candidates["denim_jacket_womens"])
+    res = ev(client, candidates["outerwear_womens"])
     check_shape(res)
-    assert res["template_names"] == ["top+bottom+outerwear", "dress+outerwear"]
-    assert res["outfit_count_by_template"]["top+bottom+outerwear"] > 0
+    assert res["template_names"] == ["top+bottom+outerwear+shoes", "dress+outerwear+shoes"]
+    assert res["outfit_count_by_template"]["top+bottom+outerwear+shoes"] > 0
 
 
 def test_dress_templates(client, candidates):
-    res = ev(client, candidates["floral_dress_womens"])
+    res = ev(client, candidates["dress_womens"])
     check_shape(res)
-    assert res["template_names"] == ["dress", "dress+outerwear"]
-    if res["redundancy"]["level"] != "near_duplicate":
-        assert res["outfit_count_by_template"]["dress"] == 1
+    assert res["template_names"] == ["dress+shoes", "dress+outerwear+shoes"]
 
 
-def test_shoes_unsupported(client, candidates):
-    res = ev(client, candidates["white_sneakers_mens"])
+def test_shoes_supported(client, candidates):
+    res = ev(client, candidates["shoes_womens"])
+    check_shape(res)
+    assert res["supported"] is True
+    assert res["template_names"] == ["top+bottom+shoes", "dress+shoes"]
+
+
+def test_accessory_unsupported(client, candidates):
+    res = ev(client, candidates["bag_womens"])
     assert res["supported"] is False and res["verdict"]["decision"] == "UNSUPPORTED"
     assert res["total_new_outfits"] == 0
 
 
-def test_threshold_changes_count(client, candidates):
-    base = ev(client, candidates["pink_top_womens"])["total_new_outfits"]
-    client.put("/api/settings", json={"compat_threshold": 0.99})
-    strict = ev(client, candidates["pink_top_womens"])["total_new_outfits"]
+def test_strictness_changes_count(client, candidates):
+    base = ev(client, candidates["bottom_womens"])["total_new_outfits"]
+    client.put("/api/settings", json={"compat_threshold": 0.9})
+    strict = ev(client, candidates["bottom_womens"])
+    client.put("/api/settings", json={"compat_threshold": 0.1})
+    lenient = ev(client, candidates["bottom_womens"])["total_new_outfits"]
     client.put("/api/settings", json={"compat_threshold": 0.5})
-    assert strict <= base
+    assert strict["total_new_outfits"] <= base <= lenient
+    assert all(o["score"] >= 0.9 for o in strict["outfits"])
+
+
+def test_no_shoes_layer_setting(client, candidates):
+    client.put("/api/settings", json={"use_shoes_layer": False})
+    res = ev(client, candidates["bottom_womens"])
+    client.put("/api/settings", json={"use_shoes_layer": True})
+    assert res["template_names"] == ["top+bottom", "top+bottom+outerwear"]
+    check_shape(res)
+
+
+def test_calibration_math():
+    from app.scoring import calibrate, raw_cutoff
+    for n, t in ((2, 0.15), (3, 0.35), (4, 0.6), (6, 0.6)):
+        assert calibrate(t, n) == pytest.approx(0.5)
+        assert raw_cutoff(0.5, n) == pytest.approx(t)
+        assert raw_cutoff(0.0, n) == 0.0 and raw_cutoff(1.0, n) == pytest.approx(1.0)
+        for s in (0.1, 0.3, 0.7, 0.9):
+            assert calibrate(raw_cutoff(s, n), n) == pytest.approx(s)
+    assert calibrate(0.3, 2) > calibrate(0.3, 3) > calibrate(0.3, 4)
+
+
+def test_item_text():
+    from app.scoring import item_text
+    t = item_text({"attributes": {"primary_color": "Navy", "pattern": "solid", "fabric_guess": "cotton twill",
+                                  "subcategory": "chinos"}})
+    assert t == "navy cotton twill chinos"
 
 
 def test_settings_roundtrip(client):
@@ -129,7 +178,7 @@ def test_verdict_formula():
 
 def test_detect_add_evaluate_delete(client):
     """Stage 1-2 via API (uses Gemini if GEMINI_API_KEY is set, else whole-image + zero-shot fallback)."""
-    img = TEST_IMAGES / "product_olive_shirt_mens.jpg"
+    img = TEST_IMAGES / "product_top_womens.jpg"
     with open(img, "rb") as f:
         r = client.post("/api/detect", files={"file": ("shirt.jpg", f, "image/jpeg")}, data={"purpose": "closet"})
     assert r.status_code == 200, r.text
@@ -137,18 +186,18 @@ def test_detect_add_evaluate_delete(client):
     assert det["photo_id"] and det["image_url"].startswith("/media/") and det["items"]
     it = det["items"][0]
     assert it["status"] == "detected" and len(it["bbox"]) == 4 and it["cutout_url"].startswith("/media/")
-    assert it["attributes"]["category"] in ("top", "outerwear")
+    assert it["attributes"]["category"] in ("top", "outerwear", "dress")
     n0 = len(client.get("/api/closet/items").json()["items"])
     added = client.post("/api/closet/items", json={"item_ids": [it["id"]],
-                                                   "attributes_overrides": {it["id"]: {"primary_color": "olive"}}})
+                                                   "attributes_overrides": {it["id"]: {"primary_color": "pink"}}})
     assert added.status_code == 200 and added.json()["items"][0]["status"] == "closet"
-    assert added.json()["items"][0]["attributes"]["primary_color"] == "olive"
+    assert added.json()["items"][0]["attributes"]["primary_color"] == "pink"
     assert len(client.get("/api/closet/items").json()["items"]) == n0 + 1
     p = client.patch(f"/api/closet/items/{it['id']}", json={"attributes": {"formality": 4}}).json()
     assert p["attributes"]["formality"] == 4 and p["attributes"]["formality_label"] == "business"
-    # the held-out olive shirt candidate is now a near duplicate of what we just added
+    # the held-out hoodie candidate is now redundant with the copy we just added from its photo
     from app import db
-    cand = next(c for c in db.list_items(status="candidate") if c["attributes"].get("test_key") == "olive_shirt_mens")
+    cand = next(c for c in db.list_items(status="candidate") if c["attributes"].get("test_key") == "top_womens")
     res = ev(client, cand["id"])
     assert res["redundancy"]["level"] in ("similar", "near_duplicate")
     assert client.delete(f"/api/closet/items/{it['id']}").json() == {"ok": True}
@@ -156,7 +205,7 @@ def test_detect_add_evaluate_delete(client):
 
 
 def test_candidate_add_to_closet(client, candidates):
-    iid = candidates["pink_top_womens"]
+    iid = candidates["dress_womens"]
     ev(client, iid, price=22)
     r = client.post(f"/api/candidate/{iid}/add-to-closet")
     assert r.status_code == 200 and r.json()["status"] == "closet"

@@ -100,11 +100,11 @@ const pending = new Map<string, Item>(); // detected, not yet in closet
 
 let settings: Settings = {
   compat_threshold: 0.5,
-  redundancy_similar_threshold: 0.8,
-  redundancy_duplicate_threshold: 0.92,
+  redundancy_similar_threshold: 0.82,
+  redundancy_duplicate_threshold: 0.9,
   min_new_outfits: 3,
-  max_cost_per_outfit: 15,
-  monthly_budget: 150,
+  max_cost_per_outfit: 10,
+  monthly_budget: 200,
   style_goal: "Minimal, versatile pieces that mix and match",
   occasions: ["work", "casual"],
 };
@@ -289,7 +289,9 @@ export const mockApi = {
         price: p,
         cost_per_outfit: cpo,
         weighted_outfits: weighted,
-        value_score: Math.min(1, weighted / Math.max(1, p / 10)),
+        value_score: Math.round(100 * Math.min(1, weighted / Math.max(1, p / 10))),
+        budget_remaining: settings.monthly_budget,
+        currency: "USD",
       },
       verdict: { decision: buy ? "BUY" : "SKIP", reasons },
       evaluation_id: nid("ev"),

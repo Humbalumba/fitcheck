@@ -7,17 +7,11 @@ from datetime import datetime, timezone
 
 from . import db
 from .pipeline import item_to_api
-from .scoring import ensure_compat_embeddings, score_outfits_cached, scorer_kind
+from .scoring import calibrate, calibration_table, ensure_compat_embeddings, score_outfits_cached, scorer_kind
 from .vectors import closet_index, ensure_fclip
 
 log = logging.getLogger("fitcheck.evaluate")
 
-TEMPLATES = {
-    "top": ["top+bottom", "top+bottom+outerwear"],
-    "bottom": ["top+bottom", "top+bottom+outerwear"],
-    "outerwear": ["top+bottom+outerwear", "dress+outerwear"],
-    "dress": ["dress", "dress+outerwear"],
-}
 DISPLAY_ORDER = {"top": 0, "dress": 0, "bottom": 1, "outerwear": 2, "shoes": 3, "accessory": 4}
 MAX_OUTFITS_RETURNED_PER_TEMPLATE = 60
 MATCH_DISPLAY_FLOOR = 0.75  # redundancy matches below this aren't worth showing
@@ -91,8 +85,31 @@ def text_embeddings(texts: list[str]):
 
 
 # ------------------------------------------------------------------ Stage 5
-def generate_outfits(cand: dict, closet: list[dict], settings: dict, redundancy_level: str) -> list[dict]:
-    t = float(settings["compat_threshold"])
+SUPPORTED = ("top", "bottom", "outerwear", "dress", "shoes")
+
+
+def templates_for(cat: str, use_shoes: bool) -> list[str]:
+    sh = "+shoes" if use_shoes else ""
+    return {
+        "top": [f"top+bottom{sh}", f"top+bottom+outerwear{sh}"],
+        "bottom": [f"top+bottom{sh}", f"top+bottom+outerwear{sh}"],
+        "outerwear": [f"top+bottom+outerwear{sh}", f"dress+outerwear{sh}"],
+        "dress": ["dress+shoes" if use_shoes else "dress", f"dress+outerwear{sh}"],
+        "shoes": ["top+bottom+shoes", "dress+shoes"],
+    }[cat]
+
+
+def generate_outfits(cand: dict, closet: list[dict], settings: dict, redundancy_level: str) -> tuple[list[dict], list[str]]:
+    """Greedy, slot-by-slot outfit search (never two items of the same slot).
+
+    Every candidate outfit is scored by the compat model; raw scores are calibrated per outfit size
+    (scoring.calibrate) and an outfit is kept iff calibrated >= compat_threshold ("match strictness").
+    Shoes are an optional LAST layer: if the closet has shoes, each base look (top+bottom, +outerwear,
+    dress, dress+outerwear) is scored with every shoe and judged by its best shoe -> one outfit per look,
+    so shoes never multiply the count. For a shoes candidate, a look counts only if the new shoes pass
+    AND beat every shoe you already own for that look (i.e. it's a genuinely new/better outfit).
+    """
+    s = float(settings["compat_threshold"])
     cat = cand["category"]
     pool = [c for c in closet if c["id"] != cand["id"]]
     if settings.get("match_gender_presentation", True):
@@ -100,41 +117,83 @@ def generate_outfits(cand: dict, closet: list[dict], settings: dict, redundancy_
     by_cat: dict[str, list[dict]] = {}
     for c in pool:
         by_cat.setdefault(c["category"], []).append(c)
-    tops, bottoms, outer, dresses = (by_cat.get(k, []) for k in ("top", "bottom", "outerwear", "dress"))
-    needed = [cand] + tops + bottoms + outer + dresses
+    tops, bottoms, outer, dresses, shoes = (by_cat.get(k, []) for k in ("top", "bottom", "outerwear", "dress", "shoes"))
+    use_shoes = bool(shoes) and cat != "shoes" and settings.get("use_shoes_layer", True)
+    templates = templates_for(cat, use_shoes)
+    needed = [cand] + tops + bottoms + outer + dresses + shoes
     emb = ensure_compat_embeddings(needed)
     items_by_id = {i["id"]: i for i in needed}
+    shoe_ids = [x["id"] for x in shoes]
+    g_ok = (lambda a, b: gender_ok(items_by_id[a], items_by_id[b])) if settings.get("match_gender_presentation", True) \
+        else (lambda a, b: True)
+
+    def score(combos: list[list[str]]) -> list[tuple[float, float]]:
+        raws = score_outfits_cached(combos, emb) if combos else []
+        return [(r, calibrate(r, len(c))) for r, c in zip(raws, combos)]
+
+    def looks(bases: list[list[str]], with_shoes: bool) -> list[dict]:
+        """Score each base look (optionally completed with its best shoe). Returns all, with pass flag."""
+        out = []
+        if with_shoes:
+            combos, owner = [], []
+            for bi, b in enumerate(bases):
+                for sh in shoe_ids:
+                    if all(g_ok(sh, x) for x in b):
+                        combos.append(b + [sh]); owner.append(bi)
+            best: dict[int, tuple] = {}
+            for (raw, cal), c, bi in zip(score(combos), combos, owner):
+                if bi not in best or cal > best[bi][2]:
+                    best[bi] = (c, raw, cal)
+            for bi, b in enumerate(bases):
+                if bi in best:
+                    c, raw, cal = best[bi]
+                    out.append({"base": b, "item_ids": c, "raw": raw, "score": cal, "ok": cal >= s})
+        else:
+            for b, (raw, cal) in zip(bases, score(bases)):
+                out.append({"base": b, "item_ids": list(b), "raw": raw, "score": cal, "ok": cal >= s})
+        return out
+
     outfits: list[dict] = []
 
-    def score(combos: list[list[str]]) -> list[float]:
-        return score_outfits_cached(combos, emb) if combos else []
-
-    def keep(template: str, combos: list[list[str]]) -> list[tuple[list[str], float]]:
-        kept = [(c, s) for c, s in zip(combos, score(combos)) if s >= t]
-        for c, s in kept:
-            outfits.append({"template": template, "item_ids": c, "score": s})
-        return kept
+    def add(template: str, results: list[dict]):
+        for r in results:
+            if r["ok"]:
+                outfits.append({"template": template, "item_ids": r["item_ids"], "score": r["score"],
+                                "raw_score": r["raw"]})
+        return [r for r in results if r["ok"]]
 
     if cat in ("top", "bottom"):
         partners = bottoms if cat == "top" else tops
-        pairs = keep("top+bottom", [[cand["id"], p["id"]] for p in partners])
-        keep("top+bottom+outerwear", [[*pair, o["id"]] for pair, _ in pairs for o in outer])
+        base = add(templates[0], looks([[cand["id"], p["id"]] for p in partners], use_shoes))
+        add(templates[1], looks([r["base"] + [o["id"]] for r in base for o in outer], use_shoes))
     elif cat == "outerwear":
-        combos = [[tp["id"], b["id"]] for tp in tops for b in bottoms
-                  if not settings.get("match_gender_presentation", True) or gender_ok(tp, b)]
-        pairs = sorted([(c, s) for c, s in zip(combos, score(combos)) if s >= t], key=lambda x: -x[1])
-        pairs = pairs[: int(settings.get("max_pairs_for_layering", 40))]
-        keep("top+bottom+outerwear", [[*pair, cand["id"]] for pair, _ in pairs])
-        keep("dress+outerwear", [[d["id"], cand["id"]] for d in dresses])
+        pairs = [[t["id"], b["id"]] for t in tops for b in bottoms if g_ok(t["id"], b["id"])]
+        good = sorted([r for r in looks(pairs, use_shoes) if r["ok"]], key=lambda r: -r["score"])
+        good = good[: int(settings.get("max_pairs_for_layering", 40))]
+        add(templates[0], looks([r["base"] + [cand["id"]] for r in good], use_shoes))
+        add(templates[1], looks([[d["id"], cand["id"]] for d in dresses], use_shoes))
     elif cat == "dress":
-        if redundancy_level != "near_duplicate":  # a dress is a complete outfit on its own
-            outfits.append({"template": "dress", "item_ids": [cand["id"]], "score": 1.0})
-        keep("dress+outerwear", [[cand["id"], o["id"]] for o in outer])
+        if use_shoes:
+            add(templates[0], looks([[cand["id"]]], True))
+        elif redundancy_level != "near_duplicate":  # no shoes: the dress alone is one (neutral-score) outfit
+            outfits.append({"template": "dress", "item_ids": [cand["id"]], "score": 0.5, "raw_score": None})
+        add(templates[1], looks([[cand["id"], o["id"]] for o in outer], use_shoes))
+    elif cat == "shoes":
+        for template, bases in (
+                (templates[0], [[t["id"], b["id"]] for t in tops for b in bottoms if g_ok(t["id"], b["id"])]),
+                (templates[1], [[d["id"]] for d in dresses])):
+            bases = [b for b in bases if all(g_ok(cand["id"], x) for x in b)]
+            new = score([b + [cand["id"]] for b in bases])
+            existing = {tuple(r["base"]): r["score"] for r in looks(bases, True)} if shoe_ids else {}
+            for b, (raw, cal) in zip(bases, new):
+                if cal >= s and cal > existing.get(tuple(b), -1.0):
+                    outfits.append({"template": template, "item_ids": b + [cand["id"]], "score": cal,
+                                    "raw_score": raw})
 
     for o in outfits:
         o["item_ids"].sort(key=lambda i: DISPLAY_ORDER.get(items_by_id[i]["category"], 9))
-    outfits.sort(key=lambda o: (TEMPLATES[cat].index(o["template"]), -o["score"]))
-    return outfits
+    outfits.sort(key=lambda o: (templates.index(o["template"]), -o["score"]))
+    return outfits, templates
 
 
 # ------------------------------------------------------------------ Stage 6
@@ -255,9 +314,9 @@ def evaluate(item_id: str, price: float | None = None) -> dict:
     top_item = red.pop("_top_item")
 
     base = {"item": item_to_api(cand), "redundancy": red, "settings": settings, "scorer": scorer_kind()}
-    if cat not in TEMPLATES:
+    if cat not in SUPPORTED:
         msg = (f"Outfit matching for {cat or 'this item'} isn't supported yet — FitCheck currently evaluates "
-               f"tops, bottoms, outerwear and dresses.")
+               f"tops, bottoms, outerwear, dresses and shoes.")
         res = {**base, "supported": False, "message": msg, "template_names": [], "outfits": [],
                "outfit_count_by_template": {}, "total_new_outfits": 0,
                "value": {"price": price, "cost_per_outfit": None, "weighted_outfits": 0.0, "value_score": None},
@@ -265,8 +324,8 @@ def evaluate(item_id: str, price: float | None = None) -> dict:
         res["evaluation_id"] = db.save_evaluation(item_id, price, "UNSUPPORTED", res, [])
         return res
 
-    outfits = generate_outfits(cand, closet, settings, red["level"])       # Stage 5
-    counts = {tn: 0 for tn in TEMPLATES[cat]}
+    outfits, templates = generate_outfits(cand, closet, settings, red["level"])  # Stage 5
+    counts = {tn: 0 for tn in templates}
     for o in outfits:
         counts[o["template"]] += 1
     n = len(outfits)
@@ -281,8 +340,12 @@ def evaluate(item_id: str, price: float | None = None) -> dict:
         per_t[o["template"]] = per_t.get(o["template"], 0) + 1
         if per_t[o["template"]] <= MAX_OUTFITS_RETURNED_PER_TEMPLATE:
             out_list.append({"template": o["template"], "score": round(o["score"], 4),
+                             "raw_score": round(o["raw_score"], 4) if o["raw_score"] is not None else None,
+                             "n_items": len(o["item_ids"]),
                              "items": [item_to_api(all_items[i]) for i in o["item_ids"]]})
-    res = {**base, "supported": True, "message": None, "template_names": TEMPLATES[cat], "outfits": out_list,
+    res = {**base, "supported": True, "message": None, "template_names": templates, "outfits": out_list,
+           "calibration": {"strictness": settings["compat_threshold"],
+                           "raw_cutoffs_by_size": calibration_table(settings["compat_threshold"])},
            "outfits_truncated": len(out_list) < n, "outfit_count_by_template": counts, "total_new_outfits": n,
            "value": value, "verdict": verdict}
     res["evaluation_id"] = db.save_evaluation(item_id, price, verdict["decision"], res, outfits)

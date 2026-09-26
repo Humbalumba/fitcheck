@@ -77,6 +77,7 @@ class SettingsBody(BaseModel):
     occasions: Optional[list[str]] = None
     match_gender_presentation: Optional[bool] = None
     max_pairs_for_layering: Optional[int] = None
+    use_shoes_layer: Optional[bool] = None
 
 
 def _item_or_404(item_id: str) -> dict:

@@ -29,8 +29,11 @@ export interface DetectedItem {
   id: string;
   bbox: [number, number, number, number]; // ymin, xmin, ymax, xmax (0-1000)
   label: string;
-  cutout_url: string;
+  image_url?: string; // cutout on white (preferred for display)
+  cutout_url: string; // transparent PNG
   crop_url?: string;
+  status?: string;
+  category?: Category;
   attributes: Attributes;
 }
 
@@ -54,6 +57,8 @@ export interface Item {
 export interface RedundancyMatch {
   item: Item;
   similarity: number;
+  image_similarity?: number;
+  text_similarity?: number;
 }
 
 export interface Outfit {
@@ -67,6 +72,7 @@ export interface EvaluateResponse {
   template_names: string[];
   redundancy: {
     level: "none" | "similar" | "near_duplicate" | string;
+    top_similarity?: number;
     matches: RedundancyMatch[];
   };
   outfits: Outfit[];
@@ -76,9 +82,16 @@ export interface EvaluateResponse {
     price: number | null;
     cost_per_outfit: number | null;
     weighted_outfits: number;
-    value_score: number;
+    value_score: number | null; // 0-100
+    redundancy_factor?: number;
+    budget_remaining?: number | null;
+    currency?: string;
   };
-  verdict: { decision: "BUY" | "SKIP" | string; reasons: string[] };
+  verdict: { decision: "BUY" | "SKIP" | "UNSUPPORTED" | string; reasons: string[] };
+  outfits_truncated?: boolean;
+  supported?: boolean;
+  message?: string | null;
+  scorer?: string;
   evaluation_id: string;
 }
 
@@ -91,6 +104,8 @@ export interface Settings {
   monthly_budget: number | null;
   style_goal: string;
   occasions: string[];
+  match_gender_presentation?: boolean;
+  use_shoes_layer?: boolean;
   [key: string]: unknown;
 }
 

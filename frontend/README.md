@@ -46,6 +46,14 @@ NEXT_PUBLIC_MOCK=1 npm run dev
 ```
 Fixture closet of 15 items (SVG garments), fake detection (2–4 items per photo), and a local evaluator that respects the settings thresholds.
 
+## Contract notes (reconciled with ../API.md)
+- Items are displayed with `image_url` (cut-out on white), falling back to `cutout_url` (transparent PNG).
+- `value.value_score` is 0–100; `value.budget_remaining` shown under the stats when present.
+- `verdict.decision` can be `BUY`, `SKIP` or `UNSUPPORTED` (shoes/accessories: `supported:false` + `message`) — shown as a neutral "Can't score outfits" card.
+- Outfit templates are rendered generically (`top+bottom+shoes` → "Top + Bottom + Shoes"); shoes/outerwear/accessories go in the side column of the outfit card.
+- Settings: `compat_threshold` is labelled **Match strictness** (0–1, 0.5 = balanced; backend calibrates per outfit size). `match_gender_presentation` gets a toggle when present.
+- Attribute edits on a candidate are PATCHed before `POST /api/evaluate` (PATCH works for any item status).
+
 ## Code map
 - `src/lib/api.ts` — typed API client (real/mock switch, `mediaUrl()` for `/media/...` paths)
 - `src/lib/mock.ts` — mock backend

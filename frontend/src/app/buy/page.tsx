@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Info,
   Layers,
   RotateCcw,
   ShoppingBag,
@@ -144,7 +145,7 @@ export default function BuyPage() {
     return (
       <ResultView
         r={result}
-        fallbackImage={selItem?.cutout_url}
+        fallbackImage={selItem?.image_url || selItem?.cutout_url}
         onAdd={addToCloset}
         adding={adding}
         added={added}
@@ -226,7 +227,7 @@ export default function BuyPage() {
                     )}
                   >
                     <div className="relative">
-                      <ItemImage src={it.cutout_url} className="aspect-square rounded-xl" pad={false} />
+                      <ItemImage src={it.image_url || it.cutout_url} className="aspect-square rounded-xl" pad={false} />
                       <span
                         className="absolute top-1 left-1 grid place-items-center size-5 rounded-full text-[10px] font-bold text-white"
                         style={{ background: boxColor(i) }}
@@ -246,7 +247,7 @@ export default function BuyPage() {
           {(step === "select" || step === "evaluating") && selItem && (
             <Card className="p-4">
               <div className="flex gap-3">
-                <ItemImage src={selItem.cutout_url} className="size-24 rounded-2xl border border-black/5 shrink-0" pad={false} />
+                <ItemImage src={selItem.image_url || selItem.cutout_url} className="size-24 rounded-2xl border border-black/5 shrink-0" pad={false} />
                 <div className="flex-1 min-w-0">
                   <AttributeSummary a={draft} />
                   <div className="flex flex-wrap items-center gap-1.5 mt-2">
@@ -376,13 +377,15 @@ function ResultView({
   onAgain: () => void;
   onBack: () => void;
 }) {
-  const buy = String(r.verdict?.decision).toUpperCase() === "BUY";
+  const decision = String(r.verdict?.decision ?? "").toUpperCase();
+  const buy = decision === "BUY";
+  const unsupported = decision === "UNSUPPORTED" || r.supported === false;
   const item = r.item;
   const a = item?.attributes ?? {};
-  const currency = a.currency || "USD";
+  const currency = r.value?.currency || a.currency || "USD";
   const n = r.total_new_outfits ?? r.outfits?.length ?? 0;
   const vs = r.value?.value_score;
-  const vsPct = vs == null ? null : vs <= 1 ? vs * 100 : vs;
+  const vsPct = vs == null ? null : Number(vs); // 0-100
 
   const groups = useMemo(() => {
     const m = new Map<string, typeof r.outfits>();
@@ -405,31 +408,37 @@ function ResultView({
       <div
         className={cn(
           "pop rounded-[28px] p-5 text-white relative overflow-hidden",
-          buy ? "bg-gradient-to-br from-emerald-500 to-teal-600" : "bg-gradient-to-br from-rose-500 to-orange-500",
+          unsupported
+            ? "bg-gradient-to-br from-zinc-600 to-zinc-800"
+            : buy
+              ? "bg-gradient-to-br from-emerald-500 to-teal-600"
+              : "bg-gradient-to-br from-rose-500 to-orange-500",
         )}
       >
         <div className="absolute -right-8 -top-8 size-40 rounded-full bg-white/10" />
         <div className="flex items-start gap-4 relative">
           <div className="flex-1">
             <div className="inline-flex items-center gap-1.5 rounded-full bg-white/20 px-2.5 py-1 text-xs font-semibold">
-              {buy ? <ThumbsUp className="size-3.5" /> : <ThumbsDown className="size-3.5" />}
-              Our verdict
+              {unsupported ? <Info className="size-3.5" /> : buy ? <ThumbsUp className="size-3.5" /> : <ThumbsDown className="size-3.5" />}
+              {unsupported ? "Heads up" : "Our verdict"}
             </div>
-            <div className="text-6xl font-black tracking-tight mt-2 leading-none">{buy ? "BUY" : "SKIP"}</div>
+            <div className={cn("font-black tracking-tight mt-2 leading-none", unsupported ? "text-3xl" : "text-6xl")}>
+              {unsupported ? "Can't score outfits" : buy ? "BUY" : "SKIP"}
+            </div>
             <div className="text-sm text-white/85 mt-2 font-medium">
               {titleCase([a.primary_color, a.subcategory || a.category].filter(Boolean).join(" "))}
               {r.value?.price != null ? ` · ${money(r.value.price, currency)}` : ""}
             </div>
           </div>
           <div className="size-28 rounded-3xl bg-white shadow-lg overflow-hidden shrink-0 rotate-3">
-            <ItemImage src={item?.cutout_url || fallbackImage} className="size-full" />
+            <ItemImage src={item?.image_url || item?.cutout_url || fallbackImage} className="size-full" />
           </div>
         </div>
         {r.verdict?.reasons?.length > 0 && (
           <ul className="mt-4 space-y-1.5 relative">
             {r.verdict.reasons.map((x, i) => (
               <li key={i} className="flex gap-2 text-sm leading-snug">
-                <Check className="size-4 mt-0.5 shrink-0 opacity-90" />
+                <span className="size-1.5 rounded-full bg-white mt-[7px] shrink-0 opacity-90" />
                 <span>{x}</span>
               </li>
             ))}
@@ -456,6 +465,17 @@ function ResultView({
           />
           <Stat label="Price" value={money(r.value?.price, currency)} />
         </div>
+        {r.value?.budget_remaining != null && (
+          <div className="mt-3 flex items-center justify-between rounded-2xl bg-paper px-3 py-2 text-sm">
+            <span className="text-black/55">Monthly budget left</span>
+            <span className={cn("font-bold tabular-nums", (r.value.price ?? 0) > r.value.budget_remaining ? "text-rose-600" : "")}>
+              {money(r.value.budget_remaining, currency)}
+              {r.value.price != null && (
+                <span className="font-medium text-black/40"> → {money(r.value.budget_remaining - r.value.price, currency)} after</span>
+              )}
+            </span>
+          </div>
+        )}
       </Card>
 
       <RedundancyCard r={r} />
@@ -468,7 +488,9 @@ function ResultView({
         </div>
         {n === 0 ? (
           <Card className="p-5 text-sm text-black/55">
-            No outfits cleared your compatibility threshold. Try lowering it in Settings, or add more of your closet.
+            {unsupported
+              ? r.message || "Outfit scoring isn't available for this category yet."
+              : "No outfits cleared your match strictness. Try lowering it in Settings, or add more of your closet."}
           </Card>
         ) : (
           <div className="space-y-5">
@@ -477,6 +499,9 @@ function ResultView({
               .map((g) => (
                 <OutfitGroup key={g.t} template={g.t} list={g.list} count={g.count} candidateId={item?.id} />
               ))}
+            {r.outfits_truncated && (
+              <p className="text-xs text-center text-black/45">Showing the top-scoring outfits for each combination.</p>
+            )}
           </div>
         )}
       </div>
@@ -484,8 +509,8 @@ function ResultView({
       {/* Actions */}
       <div className="sticky bottom-20 z-10 pt-2">
         <div className="rounded-3xl bg-white/95 backdrop-blur border border-black/5 shadow-xl p-2.5 flex gap-2">
-          <Button variant="secondary" onClick={onAgain} className="shrink-0">
-            <RotateCcw className="size-4" /> Try another
+          <Button variant="secondary" onClick={onAgain} className="shrink-0 w-11 px-0 sm:w-auto sm:px-5" aria-label="Try another" title="Try another">
+            <RotateCcw className="size-4" /> <span className="hidden sm:inline">Try another</span>
           </Button>
           {added ? (
             <Link
@@ -495,8 +520,8 @@ function ResultView({
               <Check className="size-4" /> In your closet · View
             </Link>
           ) : (
-            <Button onClick={onAdd} loading={adding} className="flex-1">
-              <ShoppingBag className="size-4" /> I bought it — add to closet
+            <Button onClick={onAdd} loading={adding} className="flex-1 min-w-0 px-3">
+              <ShoppingBag className="size-4 shrink-0" /> <span className="truncate">I bought it — add to closet</span>
             </Button>
           )}
         </div>
@@ -565,7 +590,7 @@ function MatchTile({ item, sim }: { item: Item; sim: number }) {
   return (
     <div className="shrink-0 w-28">
       <div className="relative rounded-2xl border border-black/5 overflow-hidden">
-        <ItemImage src={item.cutout_url || item.image_url} className="aspect-square" />
+        <ItemImage src={item.image_url || item.cutout_url} className="aspect-square" />
         <span
           className={cn(
             "absolute bottom-1.5 right-1.5 rounded-full px-1.5 py-0.5 text-[11px] font-bold text-white tabular-nums",

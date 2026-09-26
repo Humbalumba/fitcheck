@@ -52,10 +52,12 @@ def _best(img_vec: np.ndarray, key: str, labels: list[str], template: str):
     return labels[i], float(p[i])
 
 
-def zero_shot_attributes(white: Image.Image, label: str = "", img_vec: np.ndarray | None = None) -> dict:
+def zero_shot_attributes(white: Image.Image, label: str = "", img_vec: np.ndarray | None = None,
+                         restrict_category: str | None = None) -> dict:
     from .vectors import embed_images
     v = img_vec if img_vec is not None else embed_images([white])[0]
-    sub, _ = _best(v, "sub", list(SUBCATS), "a photo of a {}")
+    subs = [k for k, x in SUBCATS.items() if restrict_category in (None, x[0])] or list(SUBCATS)
+    sub, _ = _best(v, f"sub:{restrict_category}", subs, "a photo of a {}")
     color, _ = _best(v, "color", COLORS, "a photo of a {} garment")
     pattern, _ = _best(v, "pattern", PATTERNS, "a photo of a {} garment")
     T = _texts("gender", ["men's clothing", "women's clothing"])

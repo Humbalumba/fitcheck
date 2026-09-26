@@ -50,6 +50,7 @@ Attributes are free-form JSON: the UI can PATCH any key. Extra keys may appear (
 ```json
 {"ok": true, "gemini": true, "scorer": "outfit_transformer", "gemini_model": "gemini-2.5-flash", "closet_size": 40}
 ```
+`gemini_model` is the auto-selected newest Flash model once resolved, else null.
 `gemini` = an API key is configured. `scorer` = `"outfit_transformer"` (real model) or `"stub"` (temporary placeholder).
 
 ## POST /api/detect
@@ -90,50 +91,72 @@ Works for any item id (detected / candidate / closet).
 
 ## POST /api/evaluate
 ```json
-{"item_id": "it_...", "price": 35}      // price optional; overrides/sets the item's price
+{"item_id": "it_...", "price": 45}      // price optional; overrides/sets the item's price
 ```
-The item becomes a `candidate` if it was `detected`. Response (trimmed; real output for the seeded
-near-duplicate navy tee):
+The item becomes a `candidate` if it was `detected`. Response (trimmed real output for the seeded white
+trousers candidate against the Polyvore demo closet):
 ```json
 {
   "item": Item,
-  "template_names": ["top+bottom", "top+bottom+outerwear"],
+  "template_names": ["top+bottom+shoes", "top+bottom+outerwear+shoes"],
   "redundancy": {
-    "level": "near_duplicate",                // "none" | "similar" | "near_duplicate"
-    "top_similarity": 0.904,
-    "matches": [                               // up to 3 same-category closet items with similarity >= 0.75
-      {"item": Item, "similarity": 0.904, "image_similarity": 0.8629, "text_similarity": 1.0}
+    "level": "none",                          // "none" | "similar" | "near_duplicate"
+    "top_similarity": 0.7981,
+    "matches": [                              // up to 3 same-category closet items with similarity >= 0.75
+      {"item": Item, "similarity": 0.7981, "image_similarity": 0.8423, "text_similarity": 0.6948}
     ]
   },
-  "outfits": [                                 // sorted by template then score; max 60 per template
-    {"template": "top+bottom", "score": 0.8982, "items": [Item /*candidate*/, Item /*jeans*/]},
-    {"template": "top+bottom+outerwear", "score": 0.97, "items": [Item, Item, Item]}
+  "outfits": [                                // sorted by template (template_names order) then score; max 60/template
+    {"template": "top+bottom+shoes", "score": 0.9851, "raw_score": 0.9807, "n_items": 3,
+     "items": [Item /*top*/, Item /*candidate trousers*/, Item /*boots*/]},
+    {"template": "top+bottom+outerwear+shoes", "score": 0.93, "raw_score": 0.83, "n_items": 4, "items": [...]}
   ],
   "outfits_truncated": false,
-  "outfit_count_by_template": {"top+bottom": 4, "top+bottom+outerwear": 12},
-  "total_new_outfits": 16,
-  "value": {"price": 18.0, "cost_per_outfit": 1.12, "weighted_outfits": 15.093, "value_score": 18,
-            "redundancy_factor": 0.2, "budget_remaining": 200.0, "currency": "USD"},
-  "verdict": {"decision": "SKIP", "reasons": [
-      "Pairs into 16 outfits, but they'd mostly repeat looks you already have",
-      "Very similar to your navy t-shirt (0.90 match)",
-      "$1.12 per new outfit (within your $10 limit)"]},
+  "outfit_count_by_template": {"top+bottom+shoes": 7, "top+bottom+outerwear+shoes": 35},
+  "total_new_outfits": 42,
+  "value": {"price": 45.0, "cost_per_outfit": 1.07, "weighted_outfits": 39.157, "value_score": 90,
+            "redundancy_factor": 1.0, "budget_remaining": 200.0, "currency": "USD"},
+  "verdict": {"decision": "BUY", "reasons": [
+      "Creates 42 new outfits with your wardrobe (7 top+bottom+shoes, 35 top+bottom+outerwear+shoes)",
+      "Nothing like it in your closet yet",
+      "$1.07 per new outfit (within your $10 limit)"]},
+  "calibration": {"strictness": 0.5, "raw_cutoffs_by_size": {"2": 0.15, "3": 0.35, "4+": 0.6}},
   "scorer": "outfit_transformer",
   "supported": true,
   "message": null,
-  "evaluation_id": "ev_5576138a1e11"
+  "evaluation_id": "ev_1e046c19e631"
 }
 ```
-A BUY example (seeded olive shirt, price 35): `total_new_outfits: 16`, `redundancy.level: "none"`,
-`value: {"price": 35.0, "cost_per_outfit": 2.19, "weighted_outfits": 15.352, "value_score": 81, ...}`,
-`verdict: {"decision": "BUY", "reasons": ["Creates 16 new outfits with your wardrobe (4 top+bottom, 12 top+bottom+outerwear)", "Nothing like it in your closet yet", "$2.19 per new outfit (within your $10 limit)"]}`.
+**Scores.** `score` = *calibrated* compatibility in [0,1] (use this in the UI, e.g. as a %): 0.5 means exactly
+the balanced cutoff for an outfit of that size, 1.0 = a perfect raw score. `raw_score` = the OutfitTransformer
+probability; raw scores are NOT comparable across outfit sizes (2 items ≈ 0.15 cutoff, 3 ≈ 0.35, 4+ ≈ 0.6),
+which is why the calibrated one exists. `raw_score` is `null` for the no-shoes "dress alone" outfit (fixed score 0.5).
+An outfit is kept iff `score >= settings.compat_threshold` (the "match strictness" slider, default 0.5).
+`weighted_outfits` = sum of calibrated scores.
 
-**Unsupported categories (shoes, accessory):** HTTP 200 with `"supported": false`, a friendly `"message"`,
+A near-duplicate example (seeded black cami vs the closet's black tank top):
+`redundancy.level: "near_duplicate"`, `top_similarity: 0.898`, `verdict: {"decision": "SKIP", "reasons":
+["Pairs into 30 outfits, but they'd mostly repeat looks you already have", "Very similar to your black tank top (0.90 match)", "$0.93 per new outfit (within your $10 limit)"]}`.
+
+**Templates** (`template_names` is always returned in this order; the frontend should group by it):
+
+| candidate category | closet has shoes (and `use_shoes_layer`) | no shoes in closet |
+|---|---|---|
+| top / bottom | `top+bottom+shoes`, `top+bottom+outerwear+shoes` | `top+bottom`, `top+bottom+outerwear` |
+| outerwear | `top+bottom+outerwear+shoes`, `dress+outerwear+shoes` | `top+bottom+outerwear`, `dress+outerwear` |
+| dress | `dress+shoes`, `dress+outerwear+shoes` | `dress` (dress alone, 1 outfit), `dress+outerwear` |
+| shoes | `top+bottom+shoes`, `dress+shoes` | same |
+| accessory | unsupported | unsupported |
+
+Every outfit has exactly one item per slot (never two tops). **Counting rule:** shoes are a completing
+last layer — each base look (top+bottom, top+bottom+outerwear, dress, dress+outerwear) is scored with every
+closet shoe and judged by its best shoe, so each look counts once no matter how many shoes you own.
+Outerwear variants of a passing top+bottom look count as additional outfits. For a **shoes** candidate a look
+counts only if the new shoes pass AND score higher than every shoe you already own for that look.
+
+**Unsupported categories (accessory):** HTTP 200 with `"supported": false`, a friendly `"message"`,
 `outfits: []`, `total_new_outfits: 0`, `value.value_score: null` and
 `verdict: {"decision": "UNSUPPORTED", "reasons": [message]}`. Redundancy is still computed.
-
-Templates per category: top/bottom → `top+bottom`, `top+bottom+outerwear`; outerwear → `top+bottom+outerwear`,
-`dress+outerwear`; dress → `dress` (the dress itself = 1 outfit unless near-duplicate, score 1.0), `dress+outerwear`.
 
 ## POST /api/candidate/{item_id}/add-to-closet
 "I bought it" → `Item` with `status: "closet"` (records `purchased_at` / `purchase_price`, which count against the monthly budget).
@@ -142,9 +165,9 @@ Templates per category: top/bottom → `top+bottom`, `top+bottom+outerwear`; out
 PUT takes any subset; returns the full settings object.
 ```json
 {
-  "compat_threshold": 0.5,                 // min OutfitTransformer score for an outfit to count
-  "redundancy_similar_threshold": 0.82,
-  "redundancy_duplicate_threshold": 0.90,
+  "compat_threshold": 0.5,                 // "match strictness" 0..1 on the CALIBRATED score (0.5 = balanced per-size cutoff)
+  "redundancy_similar_threshold": 0.80,
+  "redundancy_duplicate_threshold": 0.88,
   "redundancy_text_weight": 0.3,           // extra: similarity = 0.7*image cosine + 0.3*attribute-text cosine
   "min_new_outfits": 3,
   "max_cost_per_outfit": 10.0,
@@ -152,7 +175,8 @@ PUT takes any subset; returns the full settings object.
   "style_goal": "",
   "occasions": [],
   "match_gender_presentation": true,       // extra: don't pair mens-only with womens-only items
-  "max_pairs_for_layering": 40             // extra: cap on top+bottom pairs used when evaluating outerwear
+  "max_pairs_for_layering": 40,            // extra: cap on top+bottom pairs used when evaluating outerwear
+  "use_shoes_layer": true                  // extra: complete looks with the best closet shoe (see counting rule)
 }
 ```
 

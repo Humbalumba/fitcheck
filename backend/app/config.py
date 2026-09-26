@@ -33,9 +33,9 @@ CROP_PAD_FRAC = float(os.environ.get("CROP_PAD_FRAC", "0.06"))
 
 # --- Default user settings (stored in the settings table, editable via API) --
 DEFAULT_SETTINGS = {
-    "compat_threshold": 0.5,
-    "redundancy_similar_threshold": 0.82,
-    "redundancy_duplicate_threshold": 0.90,
+    "compat_threshold": 0.5,  # "match strictness" 0..1; 0.5 == balanced per-size cutoff
+    "redundancy_similar_threshold": 0.80,
+    "redundancy_duplicate_threshold": 0.88,
     "redundancy_text_weight": 0.3,  # blend: (1-w)*image cosine + w*attribute-text cosine
     "min_new_outfits": 3,
     "max_cost_per_outfit": 10.0,
@@ -45,6 +45,7 @@ DEFAULT_SETTINGS = {
     # extra (not in original contract, backwards compatible):
     "match_gender_presentation": True,  # don't pair mens-only with womens-only items
     "max_pairs_for_layering": 40,       # cap on top+bottom pairs used for outerwear search
+    "use_shoes_layer": True,            # complete each look with the best closet shoe (if any)
 }
 
 CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"]

@@ -147,3 +147,26 @@ def propose_boxes(img: Image.Image, min_frac: float = 0.015, max_side: int = 640
                                      int(ys.max() / h * 1000), int(xs.max() / w * 1000)],
                           "label": name})
     return boxes
+
+
+def white_bg_cutout(img: Image.Image, tol: int = 18):
+    """Product shot already on white: make the white region connected to the border transparent.
+    Returns (rgba, white_rgb)."""
+    img = img.convert("RGB")
+    a = np.asarray(img).astype(np.int16)
+    near_white = (a.min(axis=2) >= 255 - tol)
+    lab, n = ndimage.label(near_white)
+    border = set(np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
+    bg = np.isin(lab, list(border))
+    fg = ndimage.binary_fill_holes(~bg)
+    if fg.mean() < 0.03:  # nothing found: keep whole image
+        fg = np.ones_like(fg)
+    alpha = Image.fromarray((fg * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.8))
+    rgba = img.copy()
+    rgba.putalpha(alpha)
+    bbox = alpha.point(lambda v: 255 if v > 20 else 0).getbbox()
+    if bbox:
+        rgba = rgba.crop(bbox)
+    white = Image.new("RGB", rgba.size, (255, 255, 255))
+    white.paste(rgba, mask=rgba.split()[3])
+    return rgba, white

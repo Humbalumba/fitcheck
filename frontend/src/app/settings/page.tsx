@@ -12,10 +12,10 @@ import { useToast } from "@/components/Toast";
 
 const DEFAULTS: Settings = {
   compat_threshold: 0.5,
-  redundancy_similar_threshold: 0.8,
-  redundancy_duplicate_threshold: 0.92,
+  redundancy_similar_threshold: 0.82,
+  redundancy_duplicate_threshold: 0.9,
   min_new_outfits: 3,
-  max_cost_per_outfit: 15,
+  max_cost_per_outfit: 10,
   monthly_budget: null,
   style_goal: "",
   occasions: [],
@@ -151,13 +151,14 @@ export default function SettingsPage() {
       <Card className="p-5 space-y-6">
         <SectionTitle icon={<SlidersHorizontal className="size-4" />} title="Decision thresholds" />
         <SliderRow
-          label="Outfit compatibility threshold"
-          help="Minimum score for a combination to count as a real outfit."
+          label="Match strictness"
+          help="Higher = only stronger outfit matches count. 0.5 is balanced; FitCheck calibrates it per outfit size."
           value={s.compat_threshold}
           min={0}
           max={1}
           step={0.01}
-          fmt={(v) => v.toFixed(2)}
+          fmt={(v) => `${v.toFixed(2)} · ${v < 0.35 ? "Relaxed" : v <= 0.65 ? "Balanced" : "Strict"}`}
+          range={["0 · Relaxed", "1 · Strict"]}
           onChange={(v) => set("compat_threshold", v)}
         />
         <SliderRow
@@ -201,6 +202,22 @@ export default function SettingsPage() {
           fmt={(v) => `$${v}`}
           onChange={(v) => set("max_cost_per_outfit", v)}
         />
+        {"use_shoes_layer" in s && (
+          <ToggleRow
+            label="Include shoes in outfits"
+            help="Count outfits with a shoes layer (e.g. Top + Bottom + Shoes)."
+            on={!!s.use_shoes_layer}
+            onChange={(v) => set("use_shoes_layer", v)}
+          />
+        )}
+        {"match_gender_presentation" in s && (
+          <ToggleRow
+            label="Keep outfits consistent in cut"
+            help="Don't pair menswear-cut with womenswear-cut pieces (unisex items pair with anything)."
+            on={!!s.match_gender_presentation}
+            onChange={(v) => set("match_gender_presentation", v)}
+          />
+        )}
       </Card>
 
       <div className={cn("sticky bottom-20 z-10 transition", dirty ? "opacity-100" : "opacity-0 pointer-events-none")}>
@@ -240,6 +257,7 @@ function SliderRow({
   fmt,
   onChange,
   warn,
+  range,
 }: {
   label: string;
   help?: string;
@@ -250,6 +268,7 @@ function SliderRow({
   fmt: (v: number) => string;
   onChange: (v: number) => void;
   warn?: string;
+  range?: [string, string];
 }) {
   const v = Number(value ?? min);
   return (
@@ -269,10 +288,36 @@ function SliderRow({
         className="w-full mt-2.5 h-2"
       />
       <div className="flex justify-between text-[10px] text-black/35 -mt-0.5">
-        <span>{fmt(min)}</span>
-        <span>{fmt(max)}</span>
+        <span>{range?.[0] ?? fmt(min)}</span>
+        <span>{range?.[1] ?? fmt(max)}</span>
       </div>
       {warn && <div className="text-xs text-amber-700 mt-1">{warn}</div>}
+    </div>
+  );
+}
+
+function ToggleRow({ label, help, on, onChange }: { label: string; help?: string; on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div>
+        <div className="text-sm font-semibold">{label}</div>
+        {help && <div className="text-xs text-black/50 mt-0.5">{help}</div>}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        onClick={() => onChange(!on)}
+        className={cn("relative shrink-0 h-7 w-12 rounded-full transition", on ? "bg-accent" : "bg-black/15")}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 size-6 rounded-full bg-white shadow transition-all",
+            on ? "left-[22px]" : "left-0.5",
+          )}
+        />
+      </button>
     </div>
   );
 }

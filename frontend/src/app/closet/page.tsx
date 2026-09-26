@@ -138,7 +138,7 @@ function ItemTile({ item, onClick }: { item: Item; onClick: () => void }) {
   const a = item.attributes ?? {};
   return (
     <button onClick={onClick} className="group text-left rounded-3xl bg-white border border-black/5 overflow-hidden active:scale-[0.98] transition">
-      <ItemImage src={item.cutout_url || item.image_url} alt={a.description ?? ""} className="aspect-square" />
+      <ItemImage src={item.image_url || item.cutout_url} alt={a.description ?? ""} className="aspect-square" />
       <div className="px-3 pb-3 pt-1">
         <div className="flex items-center gap-1.5 text-sm font-semibold leading-tight">
           <ColorDot color={a.primary_color} />
@@ -229,7 +229,7 @@ function ItemSheet({
       }
     >
       <div className="rounded-3xl border border-black/5 overflow-hidden mb-4">
-        <ItemImage src={item.cutout_url || item.image_url} className="aspect-[4/3]" />
+        <ItemImage src={item.image_url || item.cutout_url} className="aspect-[4/3]" />
       </div>
       {item.attributes?.description && (
         <p className="text-sm text-black/60 mb-4">{String(item.attributes.description)}</p>
