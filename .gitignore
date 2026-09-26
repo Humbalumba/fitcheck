@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Model weights & data
+backend/models/
+backend/data/media/
+backend/data/*.db
+backend/data/*.db-*
+*.faiss
+backend/data/*.ids.npy
+backend/server.log
+backend/server.pid
+*.log
+.DS_Store
+server.pid
+compat_venv/

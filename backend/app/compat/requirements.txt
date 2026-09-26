@@ -1,0 +1,13 @@
+# OutfitTransformer compatibility scorer (CPU). Install torch from the CPU wheel index to avoid CUDA bloat:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch>=2.3
+transformers>=4.48,<5
+safetensors>=0.4
+huggingface_hub>=0.23
+pillow>=10
+numpy>=1.26
+# one-time weight download (prepare_weights.py)
+gdown>=5
+# test / eval scripts only
+pyarrow>=15
+pandas>=2

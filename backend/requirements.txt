@@ -1,0 +1,24 @@
+# CPU-only torch: install first with
+#   uv pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+torch>=2.3
+torchvision
+transformers>=4.44,<5
+safetensors
+huggingface_hub
+faiss-cpu>=1.8
+numpy
+scipy
+pillow
+pillow-heif
+fastapi>=0.110
+uvicorn[standard]
+python-multipart
+pydantic>=2
+google-genai>=1.20
+# seeding + tests
+datasets
+pandas
+pyarrow
+pytest
+httpx
+requests
