@@ -135,4 +135,3 @@ export function colorToCss(name?: string | null): string | null {
 }
 
 /** sessionStorage key: the closet-door landing intro already played in this browser session. */
-export const DOORS_SEEN_KEY = "fitcheck:doors-seen";

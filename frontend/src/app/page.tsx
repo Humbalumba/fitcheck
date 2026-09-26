@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { OpeningAnimation } from "@/components/OpeningAnimation";
 
 export default function Home() {
-  redirect("/closet");
+  return <OpeningAnimation href="/closet" />;
 }

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Shirt, ShoppingBag, SlidersHorizontal, type LucideIcon } from "lucide-react";
 import { ToastProvider } from "./Toast";
-import { ClosetDoors } from "./ClosetDoors";
 import { cn } from "@/lib/format";
 
 type Tab = { href: string; label: string; icon: LucideIcon; match: string[] };
@@ -17,6 +16,8 @@ const isActive = (t: Tab, pathname: string | null) => !!pathname && t.match.some
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  // The landing page is a full-screen intro with no header or nav.
+  if (pathname === "/") return <ToastProvider>{children}</ToastProvider>;
   return (
     <ToastProvider>
       <div className="min-h-dvh flex flex-col">
@@ -40,7 +41,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </nav>
       </div>
-      <ClosetDoors />
     </ToastProvider>
   );
 }

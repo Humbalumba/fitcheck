@@ -69,7 +69,7 @@ export default function ClosetPage() {
   );
 
   return (
-    <div>
+    <div className="arrive">
       <PageTitle
         title="Your closet"
         subtitle={items ? `${items.length} item${items.length === 1 ? "" : "s"}` : "Loading…"}
