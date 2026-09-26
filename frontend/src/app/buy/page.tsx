@@ -463,14 +463,6 @@ function ResultView({
         )}
       </div>
 
-      {/* Sustainability estimate (informational; hidden for unsupported items such as accessories) */}
-      <SustainabilityCard s={r.sustainability} />
-
-      {/* Live-shopping picks: fetched after the verdict renders (SKIP -> alternatives, BUY -> pairings) */}
-      {!unsupported && (buy || decision === "SKIP") && (
-        <SuggestionsSection key={r.evaluation_id} evaluationId={r.evaluation_id} decision={decision} />
-      )}
-
       {/* Headline stats */}
       <Card className="p-5">
         <div className="flex items-baseline gap-2">
@@ -537,6 +529,14 @@ function ResultView({
           </div>
         )}
       </div>
+
+      {/* Sustainability estimate (informational; hidden for unsupported items such as accessories) */}
+      <SustainabilityCard s={r.sustainability} />
+
+      {/* Live-shopping picks: fetched after the verdict renders (SKIP -> alternatives, BUY -> pairings) */}
+      {!unsupported && (buy || decision === "SKIP") && (
+        <SuggestionsSection key={r.evaluation_id} evaluationId={r.evaluation_id} decision={decision} />
+      )}
 
       <OutfitModal outfits={flat} index={zoom} candidateId={item?.id} onIndex={setZoom} onClose={closeZoom} />
 
