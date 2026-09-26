@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from . import db
+from .accessories import MESSAGE as ACCESSORY_MESSAGE, is_accessory_item
 from .pipeline import item_to_api
 from .sustainability import score_item
 from .scoring import calibrate, calibration_table, ensure_compat_embeddings, score_outfits_cached, scorer_kind
@@ -13,7 +14,7 @@ from .verdict import FORMULA_VERSION, closet_context, compute_verdict
 
 log = logging.getLogger("fitcheck.evaluate")
 
-DISPLAY_ORDER = {"top": 0, "dress": 0, "bottom": 1, "outerwear": 2, "shoes": 3, "accessory": 4}
+DISPLAY_ORDER = {"top": 0, "dress": 0, "bottom": 1, "outerwear": 2, "shoes": 3}
 MAX_OUTFITS_RETURNED_PER_TEMPLATE = 60
 MATCH_DISPLAY_FLOOR = 0.75  # redundancy matches below this aren't worth showing
 
@@ -310,10 +311,27 @@ def with_current_verdict(res: dict) -> dict:
 
 
 # ------------------------------------------------------------------ Stage 7
+def unsupported_response(cand: dict, price: float | None = None) -> dict:
+    """Accessories (or anything outside top/bottom/outerwear/dress/shoes): a friendly "clothes and shoes only"
+    answer instead of a verdict. Nothing is saved (no evaluation row, item status unchanged, no embeddings)."""
+    msg = ACCESSORY_MESSAGE
+    return {"item": item_to_api(cand), "supported": False, "message": msg, "evaluation_id": None,
+            "redundancy": {"level": "none", "top_similarity": 0.0, "matches": []}, "scorer": None,
+            "template_names": [], "outfits": [], "outfit_count_by_template": {}, "total_new_outfits": 0,
+            "value": {"price": price, "currency": "USD", "price_source": "user" if price is not None else None,
+                      "price_confidence": None, "estimated_price": None, "cost_per_wear": None,
+                      "weighted_outfits": 0.0, "value_score": None},
+            "verdict": {"decision": "UNSUPPORTED", "score": None, "reasons": [msg],
+                        "formula_version": FORMULA_VERSION},
+            "sustainability": None}
+
+
 def evaluate(item_id: str, price: float | None = None) -> dict:
     cand = db.get_item(item_id)
     if cand is None:
         raise KeyError(item_id)
+    if is_accessory_item(cand) or cand.get("category") not in SUPPORTED:  # checked BEFORE anything is written
+        return unsupported_response(cand, price)
     settings = db.get_settings()
     attrs = dict(cand["attributes"])
     if price is not None:
@@ -338,20 +356,6 @@ def evaluate(item_id: str, price: float | None = None) -> dict:
     top_item = red.pop("_top_item")
 
     base = {"item": item_to_api(cand), "redundancy": red, "settings": settings, "scorer": scorer_kind()}
-    if cat not in SUPPORTED:
-        msg = (f"Outfit matching for {cat or 'this item'} isn't supported yet — FitCheck currently evaluates "
-               f"tops, bottoms, outerwear, dresses and shoes.")
-        res = {**base, "supported": False, "message": msg, "template_names": [], "outfits": [],
-               "outfit_count_by_template": {}, "total_new_outfits": 0,
-               "value": {"price": price, "currency": "USD", "price_source": pinfo["price_source"],
-                         "price_confidence": pinfo["price_confidence"], "estimated_price": pinfo["estimated_price"],
-                         "cost_per_wear": None, "weighted_outfits": 0.0, "value_score": None},
-               "verdict": {"decision": "UNSUPPORTED", "score": None, "reasons": [msg],
-                           "formula_version": FORMULA_VERSION}}
-        res["sustainability"] = sustainability_for(cand, 0, red["top_similarity"], price, settings)  # accessory: unsupported
-        res["evaluation_id"] = db.save_evaluation(item_id, real, "UNSUPPORTED", res, [])
-        return res
-
     outfits, templates = generate_outfits(cand, closet, settings, red["level"])  # Stage 5
     counts = {tn: 0 for tn in templates}
     for o in outfits:

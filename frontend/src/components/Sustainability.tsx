@@ -89,7 +89,7 @@ export function SustainabilityCard({ s }: { s?: Sustainability | null }) {
           {summary}
         </p>
 
-        <div className="mt-2.5 flex gap-2 rounded-2xl bg-paper px-3 py-2 text-xs leading-snug text-black/65">
+        <div className="mt-2.5 flex gap-2 rounded-2xl bg-sand px-3 py-2 text-xs leading-snug text-black/65">
           <Lightbulb className="size-3.5 mt-px shrink-0 text-amber-500" />
           <span data-testid="sustainability-tip">{tip}</span>
         </div>
@@ -181,7 +181,7 @@ export function ItemSustainability({ itemId }: { itemId: string }) {
     ? new Date(s.evaluated_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })
     : null;
   return (
-    <div className="mb-4 rounded-2xl bg-paper px-3 py-2.5 flex items-center gap-2.5" data-testid="item-sustainability">
+    <div className="mb-4 rounded-2xl bg-sand px-3 py-2.5 flex items-center gap-2.5" data-testid="item-sustainability">
       <LeafChip s={s} />
       <div className="text-xs text-black/60 leading-snug min-w-0">
         <span className="font-semibold">{rating(s.score as number).label}</span> for the planet

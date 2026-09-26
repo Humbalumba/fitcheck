@@ -133,10 +133,16 @@ def test_shoes_supported(client, candidates):
     assert res["template_names"] == ["top+bottom+shoes", "dress+shoes"]
 
 
-def test_accessory_unsupported(client, candidates):
-    res = ev(client, candidates["bag_womens"])
+def test_accessory_unsupported(client):
+    # accessories are never detected any more; a legacy accessory row still gets the friendly answer, not a verdict
+    from app import db
+    iid = db.insert_item(status="detected", category="accessory", source="test",
+                         attributes={"category": "accessory", "subcategory": "handbag", "primary_color": "tan"})
+    res = ev(client, iid)
     assert res["supported"] is False and res["verdict"]["decision"] == "UNSUPPORTED"
-    assert res["total_new_outfits"] == 0
+    assert res["total_new_outfits"] == 0 and res["evaluation_id"] is None
+    assert "clothes and shoes" in res["message"]
+    db.delete_item(iid)
 
 
 def test_strictness_changes_count(client, candidates):

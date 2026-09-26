@@ -23,7 +23,7 @@ import { prepareImage } from "@/lib/image";
 import type { Attributes, DetectResponse, EvaluateResponse, Item } from "@/lib/types";
 import { categoryKey, categoryLabel, templateLabel } from "@/lib/constants";
 import { EST_PRICE_NOTE, cn, estMoney, money, pct, titleCase } from "@/lib/format";
-import { Button, Card, ErrorBanner, FormalityDots, ItemImage, PageTitle } from "@/components/ui";
+import { Button, Card, ErrorBanner, FormalityDots, ItemImage, PageTitle, Skeleton } from "@/components/ui";
 import { FilePicker } from "@/components/FilePicker";
 import { PhotoWithBoxes, boxColor } from "@/components/PhotoWithBoxes";
 import { AttributeEditor, AttributeSummary, diffAttributes } from "@/components/AttributeEditor";
@@ -181,8 +181,8 @@ export default function BuyPage() {
       )}
 
       {step === "start" && (
-        <>
-          <Card className="p-5 mb-4 relative overflow-hidden">
+        <div className="lg:grid lg:grid-cols-2 lg:gap-6 lg:items-center">
+          <Card className="p-5 mb-4 lg:mb-0 relative overflow-hidden">
             <div className="absolute -right-12 -bottom-12 size-44 rounded-full bg-accent-soft" />
             <div className="relative">
               <div className="grid place-items-center size-12 rounded-2xl bg-ink text-white mb-3">
@@ -196,30 +196,36 @@ export default function BuyPage() {
             </div>
           </Card>
           <FilePicker onFiles={onFiles} multiple={false} cameraLabel="Snap the item" libraryLabel="Upload photo" />
-        </>
+        </div>
       )}
 
       {(step === "detecting" || step === "select" || step === "evaluating") && preview && (
-        <div className="space-y-4">
-          <PhotoWithBoxes
-            src={det?.image_url || preview}
-            boxes={(det?.items ?? []).map((i) => ({ id: i.id, bbox: i.bbox, label: i.label }))}
-            selectedId={selected}
-            onSelect={step === "select" ? choose : undefined}
-            scanning={step === "detecting"}
-          />
+        <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">
+          <div className="lg:sticky lg:top-20">
+            <PhotoWithBoxes
+              src={det?.image_url || preview}
+              boxes={(det?.items ?? []).map((i) => ({ id: i.id, bbox: i.bbox, label: i.label }))}
+              selectedId={selected}
+              onSelect={step === "select" ? choose : undefined}
+              scanning={step === "detecting"}
+            />
+          </div>
+          <div className="space-y-4 min-w-0">
 
           {step === "detecting" && (
-            <LoadingLine
-              elapsed={elapsed}
-              msgs={["Finding the item…", "Cutting it out…", "Reading color, fabric & price tag…"]}
-            />
+            <>
+              <LoadingLine
+                elapsed={elapsed}
+                msgs={["Finding the item…", "Cutting it out…", "Reading color, fabric & price tag…"]}
+              />
+              <DetectSkeleton />
+            </>
           )}
 
           {step === "select" && det && det.items.length === 0 && (
             <Card className="p-5 text-center">
               <p className="font-semibold">We couldn&apos;t find a clothing item</p>
-              <p className="text-sm text-black/55 mt-1">Try again with the item filling more of the frame.</p>
+              <p className="text-sm text-black/55 mt-1">{det.message || "Try again with the item filling more of the frame."}</p>
               <Button className="mt-4" variant="secondary" onClick={() => reset()}>
                 <RotateCcw className="size-4" /> Try another photo
               </Button>
@@ -354,11 +360,14 @@ export default function BuyPage() {
             </Card>
           )}
 
+          {step === "evaluating" && <ResultSkeleton />}
+
           {step === "select" && (
             <button onClick={() => reset()} className="w-full text-sm font-semibold text-black/50 py-2">
               Use a different photo
             </button>
           )}
+          </div>
         </div>
       )}
     </div>
@@ -379,6 +388,69 @@ function LoadingLine({ elapsed, msgs }: { elapsed: number; msgs: string[] }) {
       <p className="text-xs text-black/50">
         {msgs[i]} <span className="tabular-nums">{elapsed}s</span>
       </p>
+    </div>
+  );
+}
+
+/** Placeholder for the detected-item card while the photo is analysed. */
+function DetectSkeleton() {
+  return (
+    <Card className="p-4" data-testid="detect-skeleton">
+      <div className="flex gap-3">
+        <Skeleton className="size-24 rounded-2xl shrink-0" />
+        <div className="flex-1 space-y-2.5 pt-1">
+          <Skeleton className="h-4 w-3/5 rounded-full" />
+          <Skeleton className="h-3 w-2/5 rounded-full" soft />
+          <div className="flex gap-1.5 pt-1">
+            <Skeleton className="h-5 w-14 rounded-full" soft />
+            <Skeleton className="h-5 w-16 rounded-full" soft />
+            <Skeleton className="h-5 w-12 rounded-full" soft />
+          </div>
+        </div>
+      </div>
+      <Skeleton className="h-14 w-full rounded-2xl mt-4" soft />
+    </Card>
+  );
+}
+
+/** Shape of the verdict page (hero, stats, outfits) while the evaluation runs. */
+function ResultSkeleton() {
+  return (
+    <div className="space-y-4" aria-hidden data-testid="result-skeleton">
+      <Skeleton className="h-52 rounded-[28px]" />
+      <Card className="p-5">
+        <Skeleton className="h-10 w-1/2 rounded-xl" />
+        <div className="grid grid-cols-3 gap-2 mt-4">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-16 rounded-2xl" soft />
+          ))}
+        </div>
+      </Card>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-2 gap-2.5">
+        {[0, 1, 2, 3].map((i) => (
+          <OutfitCardSkeleton key={i} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OutfitCardSkeleton() {
+  return (
+    <div className="rounded-3xl bg-card border border-black/5 p-2">
+      <div className="grid grid-cols-[1.6fr_1fr] gap-1.5">
+        <div className="flex flex-col gap-1.5">
+          <Skeleton className="aspect-[4/3] rounded-2xl" />
+          <Skeleton className="aspect-[4/3] rounded-2xl" />
+        </div>
+        <div className="flex flex-col justify-center">
+          <Skeleton className="aspect-square rounded-2xl" soft />
+        </div>
+      </div>
+      <div className="flex justify-between px-1.5 pt-2.5 pb-1">
+        <Skeleton className="h-2.5 w-16 rounded-full" soft />
+        <Skeleton className="h-2.5 w-8 rounded-full" />
+      </div>
     </div>
   );
 }
@@ -450,10 +522,12 @@ function ResultView({
   const closeZoom = useCallback(() => setZoom(null), []);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 lg:space-y-6">
       <button onClick={onBack} className="inline-flex items-center gap-1 text-sm font-semibold text-black/55 -mt-1">
         <ArrowLeft className="size-4" /> Back
       </button>
+
+      <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">
 
       {/* Verdict hero */}
       <div
@@ -491,7 +565,7 @@ function ResultView({
                 unsupported ? "text-3xl" : consider ? "text-4xl sm:text-6xl" : "text-6xl",
               )}
             >
-              {unsupported ? "Can't score outfits" : buy ? "BUY" : consider ? "CONSIDER" : "SKIP"}
+              {unsupported ? "Clothes & shoes only" : buy ? "BUY" : consider ? "CONSIDER" : "SKIP"}
             </div>
             {!unsupported && score != null && (
               <div className="mt-2 leading-none" aria-label={`Score ${score} out of 100`} data-testid="verdict-score">
@@ -524,6 +598,7 @@ function ResultView({
         )}
       </div>
 
+      <div className="space-y-4">
       {/* Headline stats */}
       <Card className="p-5" data-testid="headline-stats">
         <div className="flex items-baseline gap-2">
@@ -567,6 +642,8 @@ function ResultView({
       </Card>
 
       <RedundancyCard r={r} />
+      </div>
+      </div>
 
       {/* Outfits */}
       <div>
@@ -578,7 +655,7 @@ function ResultView({
           <Card className="p-5 text-sm text-black/55">
             {unsupported
               ? r.message || "Outfit scoring isn't available for this category yet."
-              : "Nothing matched well enough yet. Try setting outfit matching to Chill in Settings, or add more of your closet."}
+              : "Nothing matched well enough yet. Try setting outfit matching to Chill in Preferences, or add more of your closet."}
           </Card>
         ) : (
           <div className="space-y-5">
@@ -612,8 +689,8 @@ function ResultView({
       <OutfitModal outfits={flat} index={zoom} candidateId={item?.id} onIndex={setZoom} onClose={closeZoom} />
 
       {/* Actions */}
-      <div className="sticky bottom-20 z-10 pt-2">
-        <div className="rounded-3xl bg-white/95 backdrop-blur border border-black/5 shadow-xl p-2.5 flex gap-2">
+      <div className="sticky above-nav z-10 pt-2">
+        <div className="lg:max-w-xl lg:mx-auto rounded-3xl bg-card/95 backdrop-blur border border-black/5 shadow-[0_14px_30px_-12px_rgba(74,47,24,0.35)] p-2.5 flex gap-2">
           <Button variant="secondary" onClick={onAgain} className="shrink-0 w-11 !px-0 sm:w-auto sm:!px-5" aria-label="Try another" title="Try another">
             <RotateCcw className="size-4" /> <span className="hidden sm:inline">Try another</span>
           </Button>
@@ -624,7 +701,7 @@ function ResultView({
             >
               <Check className="size-4" /> In your closet · View
             </Link>
-          ) : (
+          ) : unsupported ? null : (
             <Button onClick={onAdd} loading={adding} className="flex-1 min-w-0 px-3">
               <ShoppingBag className="size-4 shrink-0" /> <span className="truncate">I bought it — add to closet</span>
             </Button>
@@ -684,7 +761,7 @@ function PriceCheck({
   const conf = r.value?.price_confidence;
   return (
     <div
-      className={cn("mt-3 rounded-2xl p-3", estimated ? "bg-amber-50 border border-amber-200" : "bg-paper")}
+      className={cn("mt-3 rounded-2xl p-3", estimated ? "bg-amber-50 border border-amber-200" : "bg-sand")}
       data-testid="price-estimate-note"
     >
       {estimated && (
@@ -736,7 +813,7 @@ function Stat({
   tone?: "good" | "warn" | "bad";
 }) {
   return (
-    <div className="rounded-2xl bg-paper px-3 py-2.5 min-w-0">
+    <div className="rounded-2xl bg-sand px-3 py-2.5 min-w-0">
       <div className="text-[10px] font-semibold uppercase tracking-wide text-black/45">{label}</div>
       <div
         className={cn(
@@ -882,7 +959,6 @@ function OutfitGroup({
 }) {
   const [all, setAll] = useState(false);
   const shown = all ? list : list.slice(0, 4);
-  const isDress = template.startsWith("dress") || list[0]?.items.some((i) => categoryKey(i.category) === "dress");
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -892,7 +968,7 @@ function OutfitGroup({
       {list.length === 0 ? (
         <p className="text-sm text-black/45">{count} combinations (not returned by the server).</p>
       ) : (
-        <div className={cn("grid gap-2.5", isDress ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-3")}>
+        <div className="grid gap-2.5 lg:gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
           {shown.map((o, i) => (
             <OutfitCard key={i} outfit={o} candidateId={candidateId} onOpen={onOpen ? () => onOpen(i) : undefined} />
           ))}

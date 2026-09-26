@@ -35,7 +35,8 @@ class Boxes(BaseModel):
 
 
 class Category(str, Enum):
-    top = "top"; bottom = "bottom"; dress = "dress"; outerwear = "outerwear"; shoes = "shoes"; accessory = "accessory"
+    # clothes and shoes only: accessories (bags, jewellery, hats, belts...) are not part of FitCheck (app/accessories.py)
+    top = "top"; bottom = "bottom"; dress = "dress"; outerwear = "outerwear"; shoes = "shoes"
 
 
 from .garment_schema import GarmentDetails  # noqa: E402
@@ -50,13 +51,12 @@ class Attributes(BaseModel):
                                            "outerwear = anything worn OVER a top: jackets (incl. hooded/zip/denim/"
                                            "bomber/windbreaker), coats, blazers, suit jackets, cardigans, vests; "
                                            "bottom = pants/jeans/skirts/shorts; dress = dresses/jumpsuits; "
-                                           "accessory = bags, belts, hats, jewelry, sunglasses, scarves, ties")
+                                           "shoes = any footwear")
     subcategory: str = Field(description="specific type, e.g. tops: t-shirt, long-sleeve tee, polo, button-down "
                                          "shirt, blouse, sweater, hoodie, tank top; bottoms: jeans, chinos, trousers, "
                                          "skirt, shorts, leggings; dress: dress, maxi dress, jumpsuit; outerwear: "
                                          "blazer, jacket, coat, cardigan, vest; shoes: sneakers, boots, heels, flats, "
-                                         "loafers, sandals; accessory: bag, belt, hat, sunglasses, necklace, "
-                                         "jewelry, scarf, tie, watch")
+                                         "loafers, sandals")
     primary_color: str = Field(description="dominant garment color as ONE simple name; look carefully: dark navy is navy, not black (black, white, grey, navy, blue, "
                                            "light blue, red, burgundy, pink, orange, yellow, green, olive, khaki, "
                                            "beige, cream, brown, tan, purple, lavender, multicolor); ignore background")
@@ -345,19 +345,28 @@ def _generate(contents, schema, low_thinking: bool = True):
 
 # ------------------------------------------------------------------ Stage 1a
 DETECT_PROMPT = """You are a fashion vision system. Detect EVERY distinct clothing item in this photo:
-tops, bottoms, dresses, outerwear, shoes and accessories (bags, hats, belts, scarves).
+tops, bottoms, dresses, outerwear and shoes ONLY.
+IGNORE ALL ACCESSORIES: bags, backpacks, wallets, jewellery (necklaces, bracelets, rings, earrings, watches), hats,
+caps, beanies, belts, scarves, sunglasses/glasses, gloves, ties and socks. Never return a box for an accessory. If the
+photo contains only accessories, return an empty list.
 Photos may be flat lays of several garments on a floor or bed, items on hangers/racks, or items being worn.
 Rules:
-- One box per garment. A pair of shoes is ONE item. Do not box people, faces, hangers, furniture, or tags.
+- One box per garment. A pair of shoes is ONE item. Do not box people, faces, hangers, furniture, tags or accessories.
 - If a garment is worn, box only that garment (e.g. shirt and pants separately).
 - Boxes must tightly contain the whole visible garment, including parts partly covered by other items.
 Return box_2d as [ymin, xmin, ymax, xmax] normalized to 0-1000 and a short descriptive label (color + type)."""
 
 
-def detect_boxes(img: Image.Image) -> list[dict]:
+def detect_boxes(img: Image.Image, dropped: list | None = None) -> list[dict]:
+    """Two-stage mode boxes. Accessory boxes (by label) are dropped defensively; their labels go to `dropped`."""
+    from .accessories import is_accessory
     res: Boxes = _generate([DETECT_PROMPT, _img_part(img)], Boxes)
     out = []
     for b in res.boxes[:25]:
+        if is_accessory(label=b.label):
+            if dropped is not None:
+                dropped.append(b.label.strip())
+            continue
         if len(b.box_2d) != 4:
             continue
         y0, x0, y1, x1 = [max(0, min(1000, int(v))) for v in b.box_2d]
@@ -418,11 +427,19 @@ text, position on the garment from the wearer's point of view, clockwise degrees
 logos."""
 
 
-def detect_items(img: Image.Image) -> list[dict]:
-    """One Gemini call: boxes + full attributes for every garment (saves 1 request per item vs detect+identify)."""
+def detect_items(img: Image.Image, dropped: list | None = None) -> list[dict]:
+    """One Gemini call: boxes + full attributes for every garment (saves 1 request per item vs detect+identify).
+    Accessories are dropped defensively even though the schema/prompt exclude them; their labels go to `dropped`."""
+    from .accessories import is_accessory
     res: DetectedItems = _generate([DETECT_DESCRIBE_PROMPT, _img_part(img)], DetectedItems)
     out = []
     for it in res.items[:25]:
+        cat = it.category.value if isinstance(it.category, Enum) else str(it.category or "")
+        if is_accessory(cat, it.subcategory, it.label):
+            log.info("Dropping accessory from detection: %s (%s)", it.label, it.subcategory)
+            if dropped is not None:
+                dropped.append((it.label or it.subcategory or "accessory").strip())
+            continue
         if len(it.box_2d) != 4:
             continue
         y0, x0, y1, x1 = [max(0, min(1000, int(v))) for v in it.box_2d]

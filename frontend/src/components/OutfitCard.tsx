@@ -6,6 +6,7 @@ import type { Item, Outfit } from "@/lib/types";
 import { categoryKey } from "@/lib/constants";
 import { mediaUrl } from "@/lib/api";
 import { cn, pct } from "@/lib/format";
+import { LoadingImg } from "./ui";
 
 export function OutfitCard({
   outfit,
@@ -47,7 +48,7 @@ export function OutfitCard({
           : undefined
       }
       className={cn(
-        "group relative rounded-3xl bg-white border border-black/5 p-2 shadow-[0_1px_2px_rgba(0,0,0,0.03)]",
+        "group relative rounded-3xl bg-card border border-black/5 p-2 shadow-[0_1px_2px_rgba(60,40,20,0.05)]",
         onOpen &&
           "cursor-pointer select-none transition duration-200 hover:-translate-y-0.5 hover:border-black/10 hover:shadow-[0_8px_24px_rgba(0,0,0,0.08)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60",
       )}
@@ -88,7 +89,7 @@ function Piece({ item, isNew, tall, small }: { item: Item; isNew?: boolean; tall
   return (
     <div
       className={cn(
-        "relative rounded-2xl overflow-hidden bg-[#fafaf8]",
+        "relative rounded-2xl overflow-hidden bg-sand",
         isNew ? "ring-2 ring-accent" : "ring-1 ring-black/5",
         tall ? "aspect-[3/4]" : small ? "aspect-square" : "aspect-[4/3]",
       )}
@@ -97,11 +98,8 @@ function Piece({ item, isNew, tall, small }: { item: Item; isNew?: boolean; tall
           Don't pass "absolute" into ItemImage: its wrapper is "relative", cn() doesn't dedupe, and the wrapper
           collapsed to 0px height, hiding the picture. */}
       {url && !err ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
+        <LoadingImg
           src={url}
-          alt=""
-          loading="lazy"
           onError={() => setErr(true)}
           className="absolute inset-0 size-full object-contain p-[8%] mix-blend-multiply"
         />

@@ -4,7 +4,6 @@ export type Category =
   | "outerwear"
   | "dress"
   | "shoes"
-  | "accessory"
   | string;
 
 export interface Attributes {
@@ -47,6 +46,8 @@ export interface DetectResponse {
   photo_id: string;
   image_url: string;
   items: DetectedItem[];
+  message?: string | null; // e.g. "No clothes found…" when only accessories were in the photo
+  skipped_accessories?: number;
 }
 
 export interface Item {

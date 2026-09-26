@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X, Loader2, ImageOff } from "lucide-react";
 import { cn } from "@/lib/format";
 import { mediaUrl } from "@/lib/api";
@@ -102,7 +102,7 @@ export function Sheet({
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="slideup relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl">
+      <div className="slideup relative w-full sm:max-w-lg max-h-[92dvh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-card shadow-2xl">
         <div className="flex items-center justify-between px-5 pt-4 pb-2">
           <div className="font-semibold text-lg">{title}</div>
           <button onClick={onClose} className="grid place-items-center size-9 rounded-full hover:bg-black/5" aria-label="Close">
@@ -120,29 +120,82 @@ export function Spinner({ className }: { className?: string }) {
   return <Loader2 className={cn("size-5 animate-spin", className)} />;
 }
 
+/** Pulsing placeholder block (loading state). Give it a size / radius via className. */
+export function Skeleton({ className, soft }: { className?: string; soft?: boolean }) {
+  return <div aria-hidden className={cn("skeleton", soft && "skeleton-soft", className)} />;
+}
+
+/**
+ * <img> that shows a pulsing placeholder until it has loaded, then fades in. Fills its (relative) parent:
+ * pass sizing / object-fit classes via className.
+ */
+export function LoadingImg({
+  src,
+  alt = "",
+  className,
+  onError,
+  lazy = true,
+}: {
+  src: string;
+  alt?: string;
+  className?: string;
+  onError?: () => void;
+  lazy?: boolean;
+}) {
+  const ref = useRef<HTMLImageElement>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const loaded = loadedSrc === src;
+  // Already-cached images can finish before React attaches onLoad (e.g. after hydration).
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !el.complete || !el.naturalWidth) return;
+    const t = setTimeout(() => setLoadedSrc(src), 0);
+    return () => clearTimeout(t);
+  }, [src]);
+  return (
+    <>
+      {!loaded && <span aria-hidden className="skeleton absolute inset-0" />}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        ref={ref}
+        src={src}
+        alt={alt}
+        loading={lazy ? "lazy" : undefined}
+        onLoad={() => setLoadedSrc(src)}
+        onError={onError}
+        className={cn("transition-opacity duration-300", loaded ? "opacity-100" : "opacity-0", className)}
+      />
+    </>
+  );
+}
+
 export function ItemImage({
   src,
   alt,
   className,
   pad = true,
+  tone = "bg-white",
+  blend = false,
 }: {
   src?: string | null;
   alt?: string;
   className?: string;
   pad?: boolean;
+  /** background class behind the picture */
+  tone?: string;
+  /** multiply the picture over the tone (white photo backgrounds melt into it) */
+  blend?: boolean;
 }) {
   const [err, setErr] = useState(false);
   const url = mediaUrl(src);
   return (
-    <div className={cn("relative bg-white overflow-hidden grid place-items-center", className)}>
+    <div className={cn("relative overflow-hidden grid place-items-center", tone, className)}>
       {url && !err ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
+        <LoadingImg
           src={url}
           alt={alt ?? ""}
-          loading="lazy"
           onError={() => setErr(true)}
-          className={cn("absolute inset-0 size-full object-contain", pad && "p-[8%]")}
+          className={cn("absolute inset-0 size-full object-contain", pad && "p-[8%]", blend && "mix-blend-multiply")}
         />
       ) : (
         <ImageOff className="size-6 text-black/20" />
@@ -186,7 +239,7 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center text-center py-14 px-6">
-      <div className="grid place-items-center size-16 rounded-3xl bg-white border border-black/5 mb-4 text-black/40">{icon}</div>
+      <div className="grid place-items-center size-16 rounded-3xl bg-card border border-black/5 mb-4 text-black/40">{icon}</div>
       <div className="font-semibold text-lg">{title}</div>
       {body && <p className="text-sm text-black/55 mt-1 max-w-xs">{body}</p>}
       {action && <div className="mt-5">{action}</div>}
@@ -206,8 +259,8 @@ export function PageTitle({ title, subtitle, right }: { title: string; subtitle?
   );
 }
 
-export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <div className={cn("rounded-3xl bg-white border border-black/5 shadow-[0_1px_2px_rgba(0,0,0,0.03)]", className)}>{children}</div>;
+export function Card({ className, children, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div {...rest} className={cn("rounded-3xl bg-card border border-black/5 shadow-[0_1px_2px_rgba(60,40,20,0.05)]", className)}>{children}</div>;
 }
 
 export function ErrorBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {

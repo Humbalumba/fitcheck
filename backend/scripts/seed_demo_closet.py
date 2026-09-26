@@ -35,8 +35,8 @@ from PIL import Image  # noqa: E402
 from app import config, db  # noqa: E402
 
 log = logging.getLogger("seed")
-CAT_MAP = {"tops": "top", "bottoms": "bottom", "outerwear": "outerwear", "all-body": "dress", "shoes": "shoes",
-           "bags": "accessory"}
+# clothes and shoes only (no accessories anywhere in FitCheck): Polyvore bags/jewellery/hats are never seeded
+CAT_MAP = {"tops": "top", "bottoms": "bottom", "outerwear": "outerwear", "all-body": "dress", "shoes": "shoes"}
 MEN_RX = re.compile(r"\bmen'?s?\b|\bmans\b|topman", re.I)
 N_WOMEN_TB, N_WOMEN_DRESS, WOMEN_SHOE_SETS, WOMEN_OUTERWEAR = 8, 4, 6, 6
 # hand-checked men's outfits from the test split (anchor item url_name -> slots to take). The second set's
@@ -60,7 +60,6 @@ SUBCAT_KW = {
     "shoes": [(r"sneaker|trainer|vans|converse|sk8", "sneakers"), (r"boot", "boots"), (r"sandal", "sandals"),
               (r"loafer", "loafers"), (r"oxford|derby|brogue", "oxfords"), (r"mule", "mules"), (r"flat", "flats"),
               (r"heel|pump|stiletto", "heels")],
-    "accessory": [(r"bag|tote|clutch|satchel|purse|backpack", "bag")],
 }
 COLORS = ["navy", "black", "white", "grey", "gray", "blue", "red", "burgundy", "pink", "green", "olive", "khaki",
           "beige", "brown", "camel", "tan", "cream", "ivory", "yellow", "orange", "purple", "silver", "gold", "nude",
@@ -188,7 +187,7 @@ def choose(meta, sets, seed: int) -> dict:
                 break
     # held-out candidates from unused women's sets (one per slot) + one men's top
     wanted = {"top_womens": "tops", "bottom_womens": "bottoms", "outerwear_womens": "outerwear",
-              "dress_womens": "all-body", "shoes_womens": "shoes", "bag_womens": "bags"}
+              "dress_womens": "all-body", "shoes_womens": "shoes"}
     for s in shuffled:
         if s["set_id"] in used_sets:
             continue
@@ -248,7 +247,7 @@ def attributes_for(iid: str, meta, gender: str, white: Image.Image) -> dict:
     cat = CAT_MAP[meta.at[iid, "category"]]
     name = name_of(meta, iid)
     text = f"{name} {meta.at[iid, 'url_name'] or ''}".lower()
-    zs = zero_shot_attributes(white, restrict_category=cat if cat != "accessory" else None)
+    zs = zero_shot_attributes(white, restrict_category=cat)
     sub = _kw(SUBCAT_KW.get(cat, []), text) or zs["subcategory"]
     color = next((c for c in COLORS if re.search(rf"\b{c}\b", text)), None) or zs["primary_color"]
     color = {"gray": "grey"}.get(color, color)
@@ -308,6 +307,7 @@ def main():
     if manifest.get("source") != "polyvore" or args.reselect:
         manifest = {"source": "polyvore", **choose(meta, sets, args.seed)}
         manifest["candidates"] = {k: list(v) for k, v in manifest["candidates"].items()}
+    manifest["candidates"].pop("bag_womens", None)  # older manifests pinned an accessory candidate: no longer seeded
     closet = [tuple(x) for x in manifest["closet"]]
     cands = {k: tuple(v) for k, v in manifest["candidates"].items()}
 

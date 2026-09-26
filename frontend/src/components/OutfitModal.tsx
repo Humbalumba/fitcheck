@@ -5,9 +5,10 @@ import { ChevronLeft, ChevronRight, ImageOff, Sparkles, X } from "lucide-react";
 import type { Item, Outfit } from "@/lib/types";
 import { categoryKey, categoryLabel, templateLabel } from "@/lib/constants";
 import { mediaUrl } from "@/lib/api";
+import { LoadingImg } from "./ui";
 import { cn, money, pct, titleCase } from "@/lib/format";
 
-const CATEGORY_ORDER = ["outerwear", "top", "dress", "bottom", "shoes", "accessory", "other"];
+const CATEGORY_ORDER = ["outerwear", "top", "dress", "bottom", "shoes", "other"];
 
 /** Order pieces the way the template reads ("top+bottom+outerwear+shoes"), falling back to head-to-toe. */
 function orderItems(outfit: Outfit): Item[] {
@@ -131,7 +132,7 @@ export function OutfitModal({
 
       {/* Panel */}
       <div
-        className="zoomin relative flex w-full max-w-5xl max-h-full flex-col overflow-hidden rounded-[28px] bg-white shadow-2xl"
+        className="zoomin relative flex w-full max-w-5xl max-h-full flex-col overflow-hidden rounded-[28px] bg-card shadow-2xl"
         onTouchStart={(e) => {
           const t = e.touches[0];
           touch.current = { x: t.clientX, y: t.clientY };
@@ -160,7 +161,7 @@ export function OutfitModal({
             </div>
           </div>
           {Number.isFinite(score) && (
-            <div className="shrink-0 rounded-2xl bg-paper px-3 py-1.5 text-right">
+            <div className="shrink-0 rounded-2xl bg-sand px-3 py-1.5 text-right">
               <div className="inline-flex items-center gap-1.5 text-lg sm:text-xl font-black tabular-nums leading-none">
                 <span className={cn("size-2.5 rounded-full", tone)} />
                 {pct(score)}
@@ -238,15 +239,15 @@ function BigPiece({ item, isNew }: { item: Item; isNew: boolean }) {
     <figure className="min-w-0">
       <div
         className={cn(
-          "relative aspect-square sm:aspect-[3/4] rounded-2xl overflow-hidden bg-[#f7f6f3]",
-          isNew ? "ring-[3px] ring-accent ring-offset-2 ring-offset-white" : "ring-1 ring-black/5",
+          "relative aspect-square sm:aspect-[3/4] rounded-2xl overflow-hidden bg-sand",
+          isNew ? "ring-[3px] ring-accent ring-offset-2 ring-offset-card" : "ring-1 ring-black/5",
         )}
       >
         {url && !err ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
+          <LoadingImg
             src={url}
             alt={itemTitle(item)}
+            lazy={false}
             onError={() => setErr(true)}
             className="absolute inset-0 size-full object-contain p-[7%] mix-blend-multiply"
           />

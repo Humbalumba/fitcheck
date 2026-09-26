@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import type { Settings } from "@/lib/types";
 import { OCCASION_SUGGESTIONS } from "@/lib/constants";
 import { cn, titleCase } from "@/lib/format";
-import { Button, Card, ErrorBanner, PageTitle } from "@/components/ui";
+import { Button, Card, ErrorBanner, PageTitle, Skeleton } from "@/components/ui";
 import { TagInput } from "@/components/AttributeEditor";
 import { useToast } from "@/components/Toast";
 
@@ -89,7 +89,7 @@ export default function SettingsPage() {
       const merged = { ...DEFAULTS, ...(r && typeof r === "object" ? r : s) } as Settings;
       setOrig(merged);
       setS(merged);
-      toast("Settings saved");
+      toast("Preferences saved");
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -100,24 +100,35 @@ export default function SettingsPage() {
   if (error)
     return (
       <div>
-        <PageTitle title="Settings" />
+        <PageTitle title="Preferences" />
         <ErrorBanner message={error} onRetry={load} />
       </div>
     );
   if (!s)
     return (
       <div>
-        <PageTitle title="Settings" />
-        <div className="space-y-3">
-          <div className="h-48 rounded-3xl skeleton" />
-          <div className="h-72 rounded-3xl skeleton" />
+        <PageTitle title="Preferences" />
+        <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-3 lg:gap-6" aria-busy>
+          {[3, 4, 2].map((lines, i) => (
+            <Card key={i} className="p-5 space-y-4">
+              <div className="flex items-center gap-2">
+                <Skeleton className="size-7 rounded-lg" />
+                <Skeleton className="h-4 w-1/2 rounded-full" />
+              </div>
+              {Array.from({ length: lines }).map((_, j) => (
+                <Skeleton key={j} className={j === 0 ? "h-20 rounded-xl" : "h-10 rounded-full"} soft />
+              ))}
+            </Card>
+          ))}
         </div>
       </div>
     );
 
   return (
-    <div className="space-y-4">
-      <PageTitle title="Settings" subtitle="Your goals and how picky FitCheck should be." />
+    <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-3 lg:gap-6 lg:items-stretch">
+      <div className="lg:col-span-3">
+        <PageTitle title="Preferences" subtitle="Your goals and how picky FitCheck should be." />
+      </div>
 
       <Card className="p-5 space-y-5">
         <SectionTitle icon={<Target className="size-4" />} title="Goals" />
@@ -159,7 +170,8 @@ export default function SettingsPage() {
         </div>
       </Card>
 
-      <Card className="p-5 space-y-5" data-testid="match-picker">
+      <Card className="p-5 space-y-5" data-testid="matching-card">
+        <div className="space-y-5" data-testid="match-picker">
         <SectionTitle icon={<Sparkles className="size-4" />} title="How picky should outfit matching be?" />
         <PresetPicker
           label="Outfit matching"
@@ -183,9 +195,9 @@ export default function SettingsPage() {
             onChange={(v) => set("match_gender_presentation", v)}
           />
         )}
-      </Card>
+        </div>
 
-      <Card className="p-5 space-y-5" data-testid="dupe-picker">
+        <div className="space-y-5 border-t border-black/[0.07] pt-5" data-testid="dupe-picker">
         <SectionTitle icon={<Copy className="size-4" />} title="How careful about stuff you already own?" />
         <PresetPicker
           label="Duplicate check"
@@ -195,6 +207,7 @@ export default function SettingsPage() {
             setS((x) => (x ? { ...x, redundancy_duplicate_threshold: p.dup, redundancy_similar_threshold: p.similar } : x))
           }
         />
+        </div>
       </Card>
 
       <Card className="p-5 space-y-3" data-testid="verdict-explainer">
@@ -224,13 +237,13 @@ export default function SettingsPage() {
         </ul>
       </Card>
 
-      <div className={cn("sticky bottom-20 z-10 transition", dirty ? "opacity-100" : "opacity-0 pointer-events-none")}>
-        <div className="rounded-3xl bg-white/95 backdrop-blur border border-black/5 shadow-xl p-2.5 flex gap-2">
+      <div className={cn("sticky above-nav z-10 transition lg:col-span-3", dirty ? "opacity-100" : "opacity-0 pointer-events-none")}>
+        <div className="lg:max-w-xl lg:mx-auto rounded-3xl bg-card/95 backdrop-blur border border-black/5 shadow-[0_14px_30px_-12px_rgba(74,47,24,0.35)] p-2.5 flex gap-2">
           <Button variant="secondary" onClick={() => setS(orig)} disabled={!dirty} className="shrink-0">
             <RotateCcw className="size-4" /> Reset
           </Button>
           <Button onClick={save} loading={saving} disabled={!dirty} className="flex-1">
-            {dirty ? "Save settings" : "All changes saved"}
+            {dirty ? "Save preferences" : "All changes saved"}
           </Button>
         </div>
       </div>
@@ -265,7 +278,7 @@ function PresetPicker<P extends Preset>({
   const current = presets.find((p) => p.key === active) ?? presets[Math.floor(presets.length / 2)];
   return (
     <div>
-      <div role="radiogroup" aria-label={label} className="grid grid-cols-3 gap-1 rounded-full bg-paper p-1">
+      <div role="radiogroup" aria-label={label} className="grid grid-cols-3 gap-1 rounded-full bg-sand p-1">
         {presets.map((p) => {
           const on = p.key === current.key;
           return (

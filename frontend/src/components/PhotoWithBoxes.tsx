@@ -32,7 +32,7 @@ export function PhotoWithBoxes({
   className?: string;
 }) {
   return (
-    <div className={cn("flex justify-center overflow-hidden rounded-3xl bg-[#ebe9e4]", className)}>
+    <div className={cn("flex justify-center overflow-hidden rounded-3xl bg-sand-deep", className)}>
       <div className="relative w-fit">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={mediaUrl(src)} alt="Uploaded photo" className="block max-w-full h-auto max-h-[62dvh]" />

@@ -39,6 +39,7 @@ import numpy as np
 from PIL import Image
 
 from . import config, db, gemini
+from .accessories import is_accessory, is_accessory_item
 from .evaluate import (SUPPORTED, generate_outfits, item_name, redundancy, redundancy_text,
                        sustainability_for, text_embeddings, verdict_for, with_current_verdict)
 from .pipeline import item_to_api, load_image
@@ -157,6 +158,8 @@ def build_prompt(cand: dict, mode: str, summary: dict, cand_eval: dict) -> str:
             "repeating what they own. Keep them affordable (mostly under $80).",
         ]
     lines += [
+        "Clothes and shoes only: NEVER suggest accessories (bags, jewellery, watches, hats, caps, belts, scarves, "
+        "sunglasses, gloves, ties, socks).",
         "RULES: each product must be one specific, currently listed product on a retailer or brand website "
         "(e.g. Uniqlo, Gap, Old Navy, J.Crew, Madewell, Everlane, H&M, Zara, Mango, Abercrombie, Levi's, Nordstrom, "
         "Target, Macy's, ASOS). Use the product page URL exactly as found in your search results, never an invented "
@@ -282,11 +285,15 @@ _CAT_ALIASES = {"tops": "top", "shirt": "top", "bottoms": "bottom", "pants": "bo
 
 
 def normalize_category(p: dict) -> str | None:
+    """Outfit slot of a product, or None. Accessories (bags, jewellery, hats, belts...) are never suggested."""
+    if is_accessory_item(p):
+        return None
     c = (p.get("category") or "").lower().strip()
     c = _CAT_ALIASES.get(c, c)
     if c in SUPPORTED:
         return c
-    return guess_category_from_label(f"{p.get('subcategory') or ''} {p.get('name') or ''}")
+    g = guess_category_from_label(f"{p.get('subcategory') or ''} {p.get('name') or ''}")
+    return g if g in SUPPORTED else None
 
 
 def _host(u: str | None) -> str:
@@ -859,7 +866,9 @@ def compute(eid: str, fetcher=None) -> dict:
     cg = (cand.get("attributes") or {}).get("gender_presentation")
     for p in products:
         cat = normalize_category(p)
-        if mode == "alternatives" and cat != cand["category"]:
+        if is_accessory_item(p):  # clothes and shoes only
+            rejected.append({"name": p["name"], "retailer": p.get("retailer"), "reason": "accessory"})
+        elif mode == "alternatives" and cat != cand["category"]:
             rejected.append({"name": p["name"], "retailer": p.get("retailer"), "reason": f"not a {cand['category']}"})
         elif mode == "pairings" and (cat not in pairing_slots(cand)):
             rejected.append({"name": p["name"], "retailer": p.get("retailer"), "reason": f"category {cat} doesn't pair"})
@@ -916,8 +925,17 @@ def delete_suggestion_items_by_id(it: dict) -> None:
             Path(it[k]).unlink(missing_ok=True)
 
 
+def drop_accessories(result: dict) -> dict:
+    """Cached suggestions saved before accessories were removed: never show an accessory product."""
+    sugs = result.get("suggestions") or []
+    keep = [s for s in sugs if not is_accessory_item({**s, "attributes": (s.get("item") or {}).get("attributes")})]
+    return result if len(keep) == len(sugs) else {**result, "suggestions": keep}
+
+
 def add_sustainability(result: dict) -> dict:
-    """Cached suggestions from before the sustainability score: compute it on read from the stored numbers."""
+    """Cached suggestions from before the sustainability score: compute it on read from the stored numbers.
+    (Also drops any accessory suggestion from old cached results.)"""
+    result = drop_accessories(result)
     sugs = result.get("suggestions") or []
     if all("sustainability" in s for s in sugs):
         return result
@@ -1115,6 +1133,8 @@ def _score_hit(h: dict, q: dict, cand_gender: str | None, price_range: tuple[flo
         return -1, f"price ${price:.0f} outside ${price_range[0]:.0f}-${price_range[1]:.0f}"
     if any(w in f" {title} " for w in NEGATIVE_WORDS):
         return -1, "not a garment"
+    if is_accessory(None, None, title) or is_accessory(None, h.get("type") or "", None):
+        return -1, "accessory"
     g = _gender_of(text)
     if cand_gender in ("mens", "womens") and g and g != cand_gender:
         return -1, f"{g} item"

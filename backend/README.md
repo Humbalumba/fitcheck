@@ -33,7 +33,7 @@ product-name keywords with fashion-clip zero-shot filling gaps (no Gemini needed
 `ashraq/fashion-product-images-small` closet was dropped: most of its photos show a person wearing the item, which
 pushes OutfitTransformer scores to ~1 for everything. Picks are pinned in `data/seed_manifest.json`.
 Held-out candidates (status `candidate`, `attributes.test_key`): `top_womens`, `bottom_womens`, `outerwear_womens`,
-`dress_womens`, `shoes_womens`, `bag_womens` (unsupported demo), `top_mens`, `near_dup_top` (auto-picked: closest
+`dress_womens`, `shoes_womens`, `top_mens`, `near_dup_top` (auto-picked: closest
 Polyvore top to a closet top, a black cami vs the closet's black tank). Their images are also in `data/test_images/product_*.jpg`
 next to real multi-item photos (flat lays, clothes on a bed, mannequin) for Stage 1-2 testing.
 
@@ -57,7 +57,7 @@ GEMINI_API_KEY=... python scripts/test_gemini.py   # Stage 1+2 on data/test_imag
 ## Pipeline
 | Stage | Where | What |
 |---|---|---|
-| 1 Capture & segment | `app/pipeline.py`, `app/gemini.py`, `app/segment.py` | Default `GEMINI_MODE=single`: ONE Gemini call per photo returns `box_2d` boxes + full attributes for every garment (structured output). Padded crop → segformer_b2_clothes mask candidates (category classes / dominant class / garment-class union, since segformer confuses trousers↔"dress" on flat lays) → quality gate (mask must span ≥80% of the tight Gemini box and fill ≥25%) → transparent PNG + white JPG. Poor mask, accessories segformer can't see, or an item >30% covered by other detected items (dense flat lay) → plain crop. Offline fallback: segformer box proposals. |
+| 1 Capture & segment | `app/pipeline.py`, `app/gemini.py`, `app/segment.py` | Default `GEMINI_MODE=single`: ONE Gemini call per photo returns `box_2d` boxes + full attributes for every garment (structured output). Padded crop → segformer_b2_clothes mask candidates (category classes / dominant class / garment-class union, since segformer confuses trousers↔"dress" on flat lays) → quality gate (mask must span ≥80% of the tight Gemini box and fill ≥25%) → transparent PNG + white JPG. Poor mask or an item >30% covered by other detected items (dense flat lay) → plain crop. Offline fallback: segformer box proposals (garment classes only). **Accessories are dropped** (prompt + schema + a defensive filter, `app/accessories.py`); a photo with only accessories → 0 items + a friendly `message`. |
 | 2 Identify | `app/gemini.py` (`Attributes` schema) | category (jackets/blazers/cardigans = outerwear), subcategory, colors, pattern, fabric, formality 1-5, seasons, style tags, gender, brand, price (only if a tag is readable). `GEMINI_MODE=two_stage` = boxes first, then one call per item with cutout + context crop (N+1 requests). Offline fallback: fashion-clip zero-shot (`app/fallback.py`). |
 | Storage | `app/db.py` | SQLite `data/fitcheck.db`: photos, items, item_embeddings, compat_edges (outfit score cache), evaluations, outfits, outfit_items, settings. |
 | Vectors | `app/vectors.py` | fashion-clip image embeddings (white cutout, L2-norm) in FAISS `IndexIDMap(IndexFlatIP)` → `data/closet.faiss` (+ `closet.ids.npy`). Rebuilt from DB if stale. |
@@ -186,7 +186,11 @@ Every closet item gets a display-only catalogue image (embeddings keep using the
 * Redundancy thresholds (0.88 / 0.80) were tuned on Polyvore product shots; real phone photos of the same kind of
   garment may score higher — adjust via `/api/settings` if needed.
 * Seeded attributes come from product names + zero-shot, so a few colors/subcategories are off (editable via PATCH).
-* Accessories (bags, jewellery...) are not evaluated (`UNSUPPORTED`).
+* **Clothes and shoes only.** Accessories (bags, jewellery, watches, hats/caps, belts, scarves, sunglasses, gloves,
+  ties, socks) are removed from the whole app (`app/accessories.py`): ignored at detection (Gemini prompt/schema,
+  zero-shot fallback flags them, segformer proposes only garment classes), refused when saving / PATCHing (`422`),
+  "Should I buy?" returns a friendly `UNSUPPORTED` message without saving anything, and never suggested.
+  Existing accessory rows were removed with `scripts/remove_accessories.py` (moves media to a backup dir, rebuilds FAISS).
 
 ## Gemini model & quota (tested 2026-09-25/26)
 - Default `GEMINI_MODEL=gemini-3-flash-preview`: same tight boxes as `gemini-3.8-flash` (newest, what "auto" picks)

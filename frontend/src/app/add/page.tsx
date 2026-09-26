@@ -8,7 +8,7 @@ import { prepareImage } from "@/lib/image";
 import type { Attributes, DetectResponse, DetectedItem } from "@/lib/types";
 import { categoryLabel } from "@/lib/constants";
 import { cn } from "@/lib/format";
-import { Button, Card, FormalityDots, ItemImage, PageTitle } from "@/components/ui";
+import { Button, Card, FormalityDots, ItemImage, PageTitle, Skeleton } from "@/components/ui";
 import { FilePicker } from "@/components/FilePicker";
 import { PhotoWithBoxes, boxColor } from "@/components/PhotoWithBoxes";
 import { AttributeEditor, AttributeSummary, diffAttributes } from "@/components/AttributeEditor";
@@ -112,8 +112,9 @@ export default function AddPage() {
         subtitle={batches.length ? "Keep snapping — each photo is processed in order." : "Build your digital closet in minutes."}
       />
 
+      <div className={cn(batches.length === 0 && "lg:grid lg:grid-cols-2 lg:gap-6 lg:items-center lg:mb-5")}>
       {batches.length === 0 ? (
-        <Card className="p-5 mb-4 overflow-hidden relative">
+        <Card className="p-5 mb-4 lg:mb-0 overflow-hidden relative">
           <div className="absolute -right-10 -top-10 size-40 rounded-full bg-accent-soft" />
           <div className="relative">
             <div className="inline-flex items-center gap-1.5 rounded-full bg-accent-soft text-accent text-xs font-semibold px-2.5 py-1 mb-3">
@@ -138,8 +139,9 @@ export default function AddPage() {
         </Card>
       ) : null}
 
-      <div className="mb-5">
+      <div className={cn("mb-5", batches.length === 0 ? "lg:mb-0" : "lg:max-w-xl")}>
         <FilePicker onFiles={addFiles} compact={batches.length > 0} cameraLabel={batches.length ? "Another photo" : "Take photo"} />
+      </div>
       </div>
 
       {batches.length > 0 && (
@@ -161,7 +163,7 @@ export default function AddPage() {
         </div>
       )}
 
-      <div className="space-y-5">
+      <div className="space-y-5 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">
         {batches.map((b, idx) => (
           <BatchCard
             key={b.key}
@@ -281,6 +283,21 @@ function BatchCard({
             </div>
           )}
 
+          {(b.status === "detecting" || b.status === "queued") && (
+            <div className={cn("px-3 pb-3 space-y-2", b.status === "queued" && "pt-3")} aria-hidden data-testid="detect-skeleton">
+              {[0, 1].map((i) => (
+                <div key={i} className="flex items-center gap-3 rounded-2xl border border-black/5 p-2.5">
+                  <Skeleton className="size-6 rounded-lg shrink-0" soft />
+                  <Skeleton className="size-16 rounded-xl shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-3.5 w-1/2 rounded-full" />
+                    <Skeleton className="h-3 w-1/3 rounded-full" soft />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {b.status === "error" && (
             <div className="p-4 flex items-center justify-between gap-3">
               <p className="text-sm text-rose-700">{b.error}</p>
@@ -294,7 +311,7 @@ function BatchCard({
             <>
               {items.length === 0 ? (
                 <p className="p-4 text-sm text-black/55">
-                  No clothing found in this photo. Try better lighting or spread the items apart.
+                  {b.result?.message || "No clothing found in this photo. Try better lighting or spread the items apart."}
                 </p>
               ) : (
                 <div className="p-3 space-y-2">

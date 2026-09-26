@@ -20,7 +20,6 @@ const SHAPES: Record<string, string> = {
     "M60 34 L86 26 L100 70 L114 26 L140 34 L170 60 L176 160 L154 160 L148 86 L146 176 L54 176 L52 86 L46 160 L24 160 L30 60 Z",
   dress: "M80 24 L120 24 L117 62 L152 178 L48 178 L83 62 Z",
   shoes: "M24 128 L26 92 L66 98 Q96 114 150 118 Q178 122 178 142 L178 152 L24 152 Z",
-  accessory: "M50 80 L150 80 L160 170 L40 170 Z M75 80 Q75 40 100 40 Q125 40 125 80",
 };
 
 export function garmentSvg(category: string, color = "gray", pattern = "solid"): string {
@@ -37,12 +36,10 @@ export function garmentSvg(category: string, color = "gray", pattern = "solid"):
         : "";
   const f = stripes ? "url(#p)" : fill;
   const extra =
-    k === "accessory"
-      ? `<path d="M75 80 Q75 40 100 40 Q125 40 125 80" fill="none" stroke="${fill}" stroke-width="8"/>`
-      : k === "outerwear"
-        ? `<line x1="100" y1="70" x2="100" y2="176" stroke="#00000033" stroke-width="2"/>`
-        : "";
-  const d = k === "accessory" ? "M50 80 L150 80 L160 170 L40 170 Z" : shape;
+    k === "outerwear"
+      ? `<line x1="100" y1="70" x2="100" y2="176" stroke="#00000033" stroke-width="2"/>`
+      : "";
+  const d = shape;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">${stripes}<path d="${d}" fill="${f}" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>${extra}</svg>`;
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
@@ -95,7 +92,6 @@ const closet: Item[] = [
   mk("dress", "slip dress", "black", { formality: 4, fabric_guess: "satin", seasons: ["spring", "summer"] }),
   mk("shoes", "sneakers", "white", { price: 90 }),
   mk("shoes", "boots", "brown", { formality: 3, fabric_guess: "leather" }),
-  mk("accessory", "tote bag", "tan", { fabric_guess: "canvas" }),
 ];
 
 const pending = new Map<string, Item>(); // detected, not yet in closet

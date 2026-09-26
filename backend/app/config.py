@@ -56,7 +56,8 @@ DEFAULT_SETTINGS = {
     "use_shoes_layer": True,            # complete each look with the best closet shoe (if any)
 }
 
-CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"]
+# clothes and shoes only: accessories are dropped at detection and refused at save (app/accessories.py)
+CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes"]
 
 for d in (DATA_DIR, MEDIA_DIR, TEST_IMAGES_DIR, MODELS_DIR):
     d.mkdir(parents=True, exist_ok=True)

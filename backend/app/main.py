@@ -126,7 +126,10 @@ def detect(file: UploadFile = File(...), purpose: Optional[str] = Form(None)):
 def add_closet_items(body: AddItemsBody):
     for iid in body.item_ids:
         _item_or_404(iid)
-    items = pipeline.add_to_closet(body.item_ids, body.attributes_overrides)
+    try:  # accessories are refused (FitCheck handles clothes and shoes only)
+        items = pipeline.add_to_closet(body.item_ids, body.attributes_overrides)
+    except pipeline.AccessoryNotAllowed as e:
+        raise HTTPException(422, str(e))
     return {"items": [pipeline.item_to_api(i) for i in items]}
 
 
@@ -138,7 +141,10 @@ def list_closet(category: Optional[str] = None):
 @app.patch("/api/closet/items/{item_id}")
 def patch_item(item_id: str, body: PatchBody):
     _item_or_404(item_id)
-    return pipeline.item_to_api(pipeline.update_attributes(item_id, body.attributes))
+    try:  # category can't become 'accessory' (or anything outside top/bottom/dress/outerwear/shoes)
+        return pipeline.item_to_api(pipeline.update_attributes(item_id, body.attributes))
+    except pipeline.AccessoryNotAllowed as e:
+        raise HTTPException(422, str(e))
 
 
 @app.delete("/api/closet/items/{item_id}")
@@ -261,7 +267,10 @@ def get_evaluation_suggestions(evaluation_id: str):
 @app.post("/api/candidate/{item_id}/add-to-closet")
 def candidate_to_closet(item_id: str):
     _item_or_404(item_id)
-    return pipeline.item_to_api(pipeline.add_to_closet([item_id], purchased=True)[0])
+    try:
+        return pipeline.item_to_api(pipeline.add_to_closet([item_id], purchased=True)[0])
+    except pipeline.AccessoryNotAllowed as e:
+        raise HTTPException(422, str(e))
 
 
 @app.get("/api/settings")

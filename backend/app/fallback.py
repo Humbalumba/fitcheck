@@ -27,9 +27,12 @@ SUBCATS = {
     "sneakers": ("shoes", 1, ["spring", "summer", "fall"]), "boots": ("shoes", 2, ["fall", "winter"]),
     "heels": ("shoes", 4, ["spring", "summer", "fall"]), "sandals": ("shoes", 1, ["summer"]),
     "loafers": ("shoes", 3, ["spring", "fall"]),
-    "handbag": ("accessory", 3, ["spring", "summer", "fall", "winter"]), "belt": ("accessory", 3, ["spring", "summer", "fall", "winter"]),
-    "hat": ("accessory", 1, ["spring", "summer"]), "scarf": ("accessory", 2, ["fall", "winter"]),
 }
+# Accessories are NOT part of FitCheck (clothes and shoes only). They are still zero-shot prompts so an accessory
+# photo is recognised as one (and dropped by the pipeline) instead of being forced into the nearest garment type.
+ACCESSORY_SUBCATS = ["handbag", "backpack", "belt", "hat", "baseball cap", "scarf", "sunglasses", "necklace",
+                     "bracelet", "watch", "necktie", "gloves", "socks"]
+ACCESSORY_MIN_PROB = 0.5  # only call it an accessory when fashion-clip is fairly sure (never drop a real garment lightly)
 COLORS = ["black", "white", "grey", "navy", "blue", "light blue", "red", "burgundy", "pink", "purple", "green",
           "olive", "yellow", "orange", "brown", "beige", "cream", "khaki"]
 PATTERNS = ["solid", "striped", "plaid", "floral", "graphic print", "polka dot", "camouflage", "denim wash"]
@@ -57,6 +60,11 @@ def zero_shot_attributes(white: Image.Image, label: str = "", img_vec: np.ndarra
     from .vectors import embed_images
     v = img_vec if img_vec is not None else embed_images([white])[0]
     subs = [k for k, x in SUBCATS.items() if restrict_category in (None, x[0])] or list(SUBCATS)
+    if restrict_category is None:  # open classification: accessories compete, and win only when clearly one
+        sub, p = _best(v, "sub:any+acc", subs + ACCESSORY_SUBCATS, "a photo of a {}")
+        if sub in ACCESSORY_SUBCATS and p >= ACCESSORY_MIN_PROB:
+            return {"category": None, "subcategory": sub, "accessory": True, "description": sub,
+                    "source": "fashion-clip-zero-shot"}
     sub, _ = _best(v, f"sub:{restrict_category}", subs, "a photo of a {}")
     color, _ = _best(v, "color", COLORS, "a photo of a {} garment")
     pattern, _ = _best(v, "pattern", PATTERNS, "a photo of a {} garment")

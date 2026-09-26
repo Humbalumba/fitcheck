@@ -4,7 +4,6 @@ export const CATEGORIES = [
   { key: "outerwear", label: "Outerwear", singular: "Outerwear" },
   { key: "dress", label: "Dresses", singular: "Dress" },
   { key: "shoes", label: "Shoes", singular: "Shoes" },
-  { key: "accessory", label: "Accessories", singular: "Accessory" },
 ] as const;
 
 export type CategoryKey = (typeof CATEGORIES)[number]["key"] | "other";
@@ -18,7 +17,6 @@ export function categoryKey(c: unknown): CategoryKey {
   if (s.startsWith("outer") || ["jacket", "coat", "blazer"].includes(s)) return "outerwear";
   if (s.startsWith("dress") || s === "jumpsuit" || s === "one-piece" || s === "onepiece") return "dress";
   if (s.startsWith("shoe") || s === "footwear" || s === "sneakers" || s === "boots") return "shoes";
-  if (s.startsWith("access") || ["bag", "hat", "jewelry", "belt", "scarf"].includes(s)) return "accessory";
   return "other";
 }
 
@@ -135,3 +133,6 @@ export function colorToCss(name?: string | null): string | null {
   }
   return null;
 }
+
+/** sessionStorage key: the closet-door landing intro already played in this browser session. */
+export const DOORS_SEEN_KEY = "fitcheck:doors-seen";

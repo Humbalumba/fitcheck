@@ -184,7 +184,8 @@ def _plain(crop: Image.Image, info: dict):
     return rgba, crop.convert("RGB"), info
 
 
-_GROUPS = {"top": {4}, "bottom": {5, 6}, "dress": {7}, "shoes": {9, 10}, "bag": {16}, "hat": {1}, "scarf": {17}}
+# clothes and shoes only: segformer's accessory classes (hat, sunglasses, belt, bag, scarf) are never proposed
+_GROUPS = {"top": {4}, "bottom": {5, 6}, "dress": {7}, "shoes": {9, 10}}
 
 
 def propose_boxes(img: Image.Image, min_frac: float = 0.015, max_side: int = 640) -> list[dict]:

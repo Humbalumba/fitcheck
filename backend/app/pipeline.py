@@ -10,6 +10,7 @@ from PIL import Image, ImageOps
 
 from . import config, db, gemini
 from . import render as _render
+from .accessories import NO_CLOTHES_MESSAGE, SAVE_MESSAGE, is_accessory, is_accessory_item
 from .fallback import zero_shot_attributes
 from .scoring import COMPAT_KIND, ensure_compat_embeddings
 from .segment import guess_category_from_label, propose_boxes, segment_crop
@@ -86,9 +87,11 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
     photo_id = db.insert_photo(str(orig_path), purpose, W, H, source)
 
     boxes, detector = [], "none"
+    skipped: list[str] = []  # accessories dropped (FitCheck handles clothes and shoes only)
     if gemini.is_configured():
         try:
-            boxes = gemini.detect_items(img) if config.GEMINI_MODE == "single" else gemini.detect_boxes(img)
+            boxes = (gemini.detect_items(img, dropped=skipped) if config.GEMINI_MODE == "single"
+                     else gemini.detect_boxes(img, dropped=skipped))
             detector = "gemini"
         except Exception as e:
             log.warning("Gemini detection failed (%s: %s); using whole image", type(e).__name__, str(e)[:200])
@@ -98,7 +101,7 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
             detector = "segformer"
         except Exception as e:
             log.warning("segformer box proposal failed: %s", e)
-    if not boxes:
+    if not boxes and not skipped:  # nothing found at all (not "only accessories"): try the whole photo
         boxes = [{"box_2d": [0, 0, 1000, 1000], "label": "clothing item"}]
         detector = detector if detector == "gemini" else "whole_image"
 
@@ -142,13 +145,37 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
     items = []
     for b, paths, seg_info, fut in futures:
         attrs = dict(b["attributes"]) if fut is None else fut.result()
+        if attrs.get("accessory") or is_accessory(attrs.get("category"), attrs.get("subcategory"), b["label"]):
+            # identified as an accessory (two-stage / offline path): not saved, files removed
+            skipped.append(b["label"] or attrs.get("subcategory") or "accessory")
+            for p in paths.values():
+                Path(p).unlink(missing_ok=True)
+            continue
         attrs["segmentation"] = seg_info.get("strategy")
         iid = db.insert_item(status="detected", category=attrs.get("category"), attributes=attrs, photo_id=photo_id,
                              bbox=b["box_2d"], label=b["label"], crop_path=paths["crop"],
                              cutout_path=paths["cutout"], white_path=paths["white"], context_path=paths["context"],
                              source=source)
         items.append(item_to_api(db.get_item(iid)))
-    return {"photo_id": photo_id, "image_url": config.media_url(orig_path), "detector": detector, "items": items}
+    return {"photo_id": photo_id, "image_url": config.media_url(orig_path), "detector": detector, "items": items,
+            "skipped_accessories": len(skipped), "message": None if items else NO_CLOTHES_MESSAGE}
+
+
+class AccessoryNotAllowed(ValueError):
+    """Accessories can't be saved: FitCheck handles clothes and shoes only (API -> 422 with this message)."""
+
+    def __init__(self, message: str = SAVE_MESSAGE):
+        super().__init__(message)
+
+
+def check_not_accessory(attrs: dict, label: str | None = None) -> None:
+    """Raise AccessoryNotAllowed if these (merged) attributes describe an accessory, or the category isn't one of
+    config.CATEGORIES (top, bottom, dress, outerwear, shoes)."""
+    cat = attrs.get("category")
+    if is_accessory(cat, attrs.get("subcategory"), label):
+        raise AccessoryNotAllowed()
+    if cat and cat not in config.CATEGORIES:
+        raise AccessoryNotAllowed(f"category must be one of: {', '.join(config.CATEGORIES)}")
 
 
 def _merge_attrs(item: dict, partial: dict) -> dict:
@@ -177,6 +204,9 @@ def update_attributes(item_id: str, partial: dict) -> dict:
     if it is None:
         raise KeyError(item_id)
     a = _merge_attrs(it, partial)
+    old = it.get("attributes") or {}
+    if any(k in (partial or {}) and partial[k] != old.get(k) for k in ("category", "subcategory")):
+        check_not_accessory(a)  # e.g. PATCH category='accessory' / subcategory='tote bag' -> 422
     db.update_item(item_id, attributes=a, category=a.get("category"))
     # text-dependent compat embedding + cached scores are stale now
     with db.get_conn() as c:
@@ -189,6 +219,19 @@ def update_attributes(item_id: str, partial: dict) -> dict:
 
 
 def add_to_closet(item_ids: list[str], overrides: dict | None = None, purchased: bool = False) -> list[dict]:
+    # validate everything first so a refused accessory never leaves a half-saved batch
+    for iid in item_ids:
+        it = db.get_item(iid)
+        if it is None:
+            raise KeyError(iid)
+        merged = _merge_attrs(it, (overrides or {}).get(iid) or {})
+        if not merged.get("category"):
+            merged["category"] = it.get("category")
+        if is_accessory_item({**it, "attributes": merged, "category": merged.get("category")}):
+            raise AccessoryNotAllowed()
+        ov_cat = ((overrides or {}).get(iid) or {}).get("category")
+        if ov_cat and ov_cat not in config.CATEGORIES:
+            raise AccessoryNotAllowed(f"category must be one of: {', '.join(config.CATEGORIES)}")
     out = []
     for iid in item_ids:
         it = db.get_item(iid)

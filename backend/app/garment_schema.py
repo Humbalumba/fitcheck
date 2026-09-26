@@ -14,7 +14,7 @@ class GarmentType(str, Enum):
     tshirt = "tshirt"; longsleeve_tee = "longsleeve_tee"; sweater = "sweater"; sweatshirt = "sweatshirt"
     polo = "polo"; shirt = "shirt"; tank_top = "tank_top"; hoodie = "hoodie"; zip_hoodie = "zip_hoodie"
     jacket = "jacket"; coat = "coat"; jeans = "jeans"; trousers = "trousers"; shorts = "shorts"; skirt = "skirt"
-    dress = "dress"; shoes = "shoes"; accessory = "accessory"; other = "other"
+    dress = "dress"; shoes = "shoes"; other = "other"  # no accessories: FitCheck handles clothes and shoes only
 
 
 class Graphic(BaseModel):

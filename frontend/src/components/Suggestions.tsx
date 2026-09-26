@@ -5,7 +5,7 @@ import { ExternalLink, ImageOff, RefreshCw, Shirt, ShoppingBag } from "lucide-re
 import { ApiError, api, mediaUrl } from "@/lib/api";
 import type { Suggestion, SuggestionsResponse } from "@/lib/types";
 import { cn, money, titleCase } from "@/lib/format";
-import { Card } from "./ui";
+import { Card, LoadingImg, Skeleton } from "./ui";
 import { OutfitModal } from "./OutfitModal";
 import { LeafChip } from "./Sustainability";
 
@@ -83,14 +83,15 @@ export function SuggestionsSection({ evaluationId, decision }: { evaluationId?: 
         <>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {[0, 1, 2].map((i) => (
-              <Card key={i} className="p-3 animate-pulse">
+              <Card key={i} className="p-3">
                 <div className="flex sm:block gap-3">
-                  <div className="size-28 sm:size-auto sm:aspect-square rounded-2xl bg-black/5 shrink-0" />
+                  <Skeleton className="size-28 sm:size-auto sm:aspect-square rounded-2xl shrink-0" />
                   <div className="flex-1 space-y-2 sm:mt-3">
-                    <div className="h-3.5 rounded bg-black/10 w-4/5" />
-                    <div className="h-3 rounded bg-black/5 w-1/2" />
-                    <div className="h-3 rounded bg-black/5 w-full" />
-                    <div className="h-3 rounded bg-black/5 w-2/3" />
+                    <Skeleton className="h-3.5 rounded-full w-4/5" />
+                    <Skeleton className="h-3 rounded-full w-1/2" soft />
+                    <Skeleton className="h-5 rounded-full w-1/3" />
+                    <Skeleton className="h-3 rounded-full w-full" soft />
+                    <Skeleton className="h-3 rounded-full w-2/3" soft />
                   </div>
                 </div>
               </Card>
@@ -182,17 +183,15 @@ function SuggestionCard({ s, onOpen }: { s: Suggestion; onOpen?: () => void }) {
           : undefined
       }
       className={cn(
-        "rounded-3xl bg-white border border-black/5 shadow-[0_1px_2px_rgba(0,0,0,0.03)] p-3 flex sm:flex-col gap-3 text-left transition outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+        "rounded-3xl bg-card border border-black/5 shadow-[0_1px_2px_rgba(60,40,20,0.05)] p-3 flex sm:flex-col gap-3 text-left transition outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
         onOpen && "cursor-pointer hover:shadow-md active:scale-[0.99]",
       )}
     >
-      <div className="relative size-28 sm:size-auto sm:aspect-square shrink-0 rounded-2xl bg-paper overflow-hidden grid place-items-center">
+      <div className="relative size-28 sm:size-auto sm:aspect-square shrink-0 rounded-2xl bg-white overflow-hidden grid place-items-center">
         {src && !broken ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
+          <LoadingImg
             src={src}
             alt={s.name}
-            loading="lazy"
             className="size-full object-contain"
             onError={() => {
               const fallback = mediaUrl(s.image_url);

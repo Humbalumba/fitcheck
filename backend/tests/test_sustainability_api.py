@@ -39,10 +39,14 @@ def test_sustainability_never_changes_the_verdict(client, candidates, monkeypatc
     assert normal["verdict"]["decision"] == "SKIP" and normal["sustainability"]["components"]["redundancy_level"] == "near_duplicate"
 
 
-def test_accessory_sustainability_unsupported(client, candidates):
-    res = _ev(client, candidates["bag_womens"], 30)
+def test_accessory_sustainability_unsupported(client):
+    from app import db
+    iid = db.insert_item(status="detected", category="accessory", source="test",
+                         attributes={"category": "accessory", "subcategory": "handbag"})
+    res = _ev(client, iid, 30)
     assert res["verdict"]["decision"] == "UNSUPPORTED"
-    assert res["sustainability"]["supported"] is False and res["sustainability"]["score"] is None
+    assert res["sustainability"] is None  # no estimate for accessories (the UI hides the card)
+    db.delete_item(iid)
 
 
 def test_saved_evaluation_computed_on_read(client, candidates):

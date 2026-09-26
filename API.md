@@ -6,13 +6,17 @@ every `*_url` field is an absolute path like `/media/cutouts/abc.png` — prefix
 
 Timestamps (`created_at`) are ISO-8601 UTC.
 
+**Clothes and shoes only.** Accessories (bags, jewellery, watches, hats/caps, belts, scarves, sunglasses, gloves,
+ties, socks) are not part of FitCheck: they are never detected, can't be saved (`422`), "Should I buy?" answers with a
+friendly `UNSUPPORTED` message instead of a verdict, and they are never suggested (`backend/app/accessories.py`).
+
 ## Item object
 
 ```json
 {
   "id": "it_2a8505fb19fc",
   "status": "closet",                 // "closet" | "candidate" | "detected" | "suggestion" (shopping pick; never in the closet/FAISS)
-  "category": "top",                  // top | bottom | dress | outerwear | shoes | accessory
+  "category": "top",                  // top | bottom | dress | outerwear | shoes (no accessories)
   "image_url": "/media/white/498fb1ccdf6f_0.jpg",    // cutout on white (use this for display)
   "cutout_url": "/media/cutouts/498fb1ccdf6f_0.png", // transparent PNG
   "crop_url": "/media/crops/498fb1ccdf6f_0.jpg",     // plain crop from the original photo (extra)
@@ -68,13 +72,18 @@ whose free-tier quota is used up (skipped until reset). `gemini_mode` = `single`
 Multipart: `file` (jpeg/png/webp/heic), optional `purpose` = `closet` | `candidate`.
 Runs Stage 1+2 (one Gemini call: boxes + attributes → segformer cutout per box, plain crop when the mask is
 poor). All items are saved with `status: "detected"`. Takes ~5-12 s (up to ~25 s if Gemini is busy).
+Accessories are ignored (the prompt says so, the schema has no accessory category, and results are filtered again,
+also in the offline fallback). A photo with only accessories returns `items: []` (HTTP 200) with a friendly
+`message`.
 `attributes.segmentation` = `category` | `dominant` | `garment_union` | `fallback_crop`.
 ```json
 {
   "photo_id": "ph_e032095d0228",
   "image_url": "/media/originals/498fb1ccdf6f.jpg",
   "detector": "gemini",            // extra: "gemini" | "segformer" (offline fallback) | "whole_image"
-  "items": [ Item, Item, ... ]     // each with bbox, label, cutout_url, crop_url, attributes
+  "items": [ Item, Item, ... ],    // each with bbox, label, cutout_url, crop_url, attributes
+  "skipped_accessories": 0,        // accessories seen and dropped
+  "message": null                  // set when items is empty, e.g. "No clothes found in this photo. ..."
 }
 ```
 
@@ -87,13 +96,16 @@ Moves detected (or candidate) items into the closet; computes embeddings and upd
 // response
 {"items": [Item, Item]}
 ```
+`422` (`detail` = friendly message, nothing saved) if any item is an accessory or an override sets
+`category` outside top/bottom/dress/outerwear/shoes (or `subcategory` to an accessory, e.g. "tote bag").
 
 ## GET /api/closet/items?category=top
 `category` optional. → `{"items": [Item, ...]}`
 
 ## PATCH /api/closet/items/{id}
 `{"attributes": {"formality": 4, "primary_color": "charcoal"}}` → `Item` (merged; `formality_label` auto-updated).
-Works for any item id (detected / candidate / closet).
+Works for any item id (detected / candidate / closet). Changing `category` to anything but
+top / bottom / dress / outerwear / shoes (e.g. `"accessory"`), or `subcategory` to an accessory type, → `422`.
 
 ## DELETE /api/closet/items/{id}
 → `{"ok": true}`
@@ -183,8 +195,8 @@ redundancy are known and saved with the evaluation. Footprint = typical garment 
 material mix (WRAP 2012 etc.; shoes use per-pair LCA values); expected wears = PEFCR default wears for the type ×
 utility(new outfits) × redundancy factor (0.75 similar / 0.5 near-duplicate); score 0-100 compares the per-wear
 footprint with a typical item of that type (50 = typical, +30 per halving); grade A ≥ 80 … E < 35. Unknown material
-→ average textile. Accessories: `{"supported": false, "score": null, ...}` (UI hides the card); if the estimator ever
-fails the field is `null`. Method + sources: `docs/SUSTAINABILITY.md`. The seeded black cami (near-duplicate, 30
+→ average textile. Accessories: `null` (no estimate; the UI hides the card); if the estimator ever fails the field
+is `null` too. Method + sources: `docs/SUSTAINABILITY.md`. The seeded black cami (near-duplicate, 30
 outfits, $28) gets 44 D ("~3.2 kg CO2e over only ~39 expected wears").
 
 ## GET /api/evaluations/{evaluation_id}
@@ -220,7 +232,6 @@ A near-duplicate example (seeded black cami vs the closet's black tank top):
 | outerwear | `top+bottom+outerwear+shoes`, `dress+outerwear+shoes` | `top+bottom+outerwear`, `dress+outerwear` |
 | dress | `dress+shoes`, `dress+outerwear+shoes` | `dress` (dress alone, 1 outfit), `dress+outerwear` |
 | shoes | `top+bottom+shoes`, `dress+shoes` | same |
-| accessory | unsupported | unsupported |
 
 Every outfit has exactly one item per slot (never two tops). **Counting rule:** shoes are a completing
 last layer — each base look (top+bottom, top+bottom+outerwear, dress, dress+outerwear) is scored with every
@@ -228,9 +239,11 @@ closet shoe and judged by its best shoe, so each look counts once no matter how 
 Outerwear variants of a passing top+bottom look count as additional outfits. For a **shoes** candidate a look
 counts only if the new shoes pass AND score higher than every shoe you already own for that look.
 
-**Unsupported categories (accessory):** HTTP 200 with `"supported": false`, a friendly `"message"`,
-`outfits: []`, `total_new_outfits: 0`, `value.value_score: null` and
-`verdict: {"decision": "UNSUPPORTED", "score": null, "reasons": [message]}`. Redundancy is still computed.
+**Accessories / unsupported categories** (only possible for items saved before accessories were removed):
+HTTP 200 with `"supported": false`, `"message": "FitCheck only checks clothes and shoes right now, ..."`,
+`outfits: []`, `total_new_outfits: 0`, `value.value_score: null`, `sustainability: null`, `evaluation_id: null` and
+`verdict: {"decision": "UNSUPPORTED", "score": null, "reasons": [message]}`. Nothing is saved (no evaluation, the
+item's status is unchanged).
 
 ## POST /api/evaluations/{evaluation_id}/suggestions[?refresh=true]
 Live-shopping picks for an evaluation, called by the UI **after** the verdict renders. Mode follows the verdict:
@@ -244,6 +257,7 @@ Live-shopping picks for an evaluation, called by the UI **after** the verdict re
   and get its own `BUY` (score ≥ 65) from the verdict formula. Ranked by outfits with the candidate, then outfits,
   then score; at most 2 per category.
 * `UNSUPPORTED` → empty `suggestions` with a `message`.
+* Accessory products are never suggested (rejected with reason `"accessory"`; also hidden from old cached results).
 
 At most **3** suggestions; fewer if fewer qualify (never padded). Results are cached per evaluation in the
 `suggestions` table (`cached: true` on re-open, no Gemini call); `?refresh=true` recomputes.
@@ -301,7 +315,7 @@ The cached result (same shape, `cached: true`) or `404` if none yet. Never calls
 
 ## POST /api/candidate/{item_id}/add-to-closet
 "I bought it" → `Item` with `status: "closet"` (records `purchased_at` / `purchase_price`; closet prices feed the
-verdict's personal price bar).
+verdict's personal price bar). `422` for accessories.
 
 ## GET /api/settings  ·  PUT /api/settings
 PUT takes any subset; returns the full settings object. Unknown / retired keys (e.g. the old outfit-count and
