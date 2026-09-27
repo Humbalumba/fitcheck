@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Shirt, ShoppingBag, SlidersHorizontal, type LucideIcon } from "lucide-react";
+import { CircleUser, Shirt, ShoppingBag, type LucideIcon } from "lucide-react";
 import { ToastProvider } from "./Toast";
 import { cn } from "@/lib/format";
 
@@ -10,7 +10,7 @@ type Tab = { href: string; label: string; icon: LucideIcon; match: string[] };
 
 const CLOSET: Tab = { href: "/closet", label: "Closet", icon: Shirt, match: ["/closet", "/add"] };
 const BUY: Tab = { href: "/buy", label: "Should I buy?", icon: ShoppingBag, match: ["/buy"] };
-const PREFS: Tab = { href: "/preferences", label: "Preferences", icon: SlidersHorizontal, match: ["/preferences", "/settings"] };
+const PROFILE: Tab = { href: "/profile", label: "Profile", icon: CircleUser, match: ["/profile", "/preferences", "/settings"] };
 
 const isActive = (t: Tab, pathname: string | null) => !!pathname && t.match.some((m) => pathname.startsWith(m));
 
@@ -55,7 +55,7 @@ export function MainNav({ pathname, className }: { pathname: string | null; clas
       <div className="pointer-events-auto flex items-center gap-2.5 p-1.5 rounded-full bg-white shadow-[0_12px_30px_-10px_rgba(74,47,24,0.35),0_2px_8px_rgba(74,47,24,0.08)] ring-1 ring-black/[0.04]">
         <SideTab tab={CLOSET} active={isActive(CLOSET, pathname)} />
         <MiddleTab tab={BUY} active={isActive(BUY, pathname)} />
-        <SideTab tab={PREFS} active={isActive(PREFS, pathname)} />
+        <SideTab tab={PROFILE} active={isActive(PROFILE, pathname)} />
       </div>
     </nav>
   );

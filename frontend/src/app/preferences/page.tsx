@@ -1,2 +1,6 @@
-// "Preferences" is the nav name for the settings page; /settings keeps working for old links.
-export { default } from "../settings/page";
+import { redirect } from "next/navigation";
+
+// Old name for the Profile page; keep /preferences links working.
+export default function PreferencesRedirect() {
+  redirect("/profile");
+}
