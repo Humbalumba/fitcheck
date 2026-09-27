@@ -206,17 +206,17 @@ export default function BuyPage() {
 
       {step === "start" && (
         <div className="pt-2 lg:pt-6">
+          {/* big, centered capture buttons */}
+          <div className="max-w-xl mx-auto h-44 lg:h-52">
+            <FilePicker onFiles={onFiles} multiple={false} cameraLabel="Snap the item" libraryLabel="Upload photo" fill />
+          </div>
           {/* floating intro: plain text, no card */}
-          <div className="text-center max-w-md mx-auto">
+          <div className="text-center max-w-md mx-auto mt-5">
             <h2 className="text-2xl font-bold tracking-tight">Know before you buy</h2>
             <p className="text-sm text-black/60 mt-1.5">
               We&apos;ll count how many <b>new outfits</b> it unlocks with your closet, check if you already own
               something like it, and work out the cost per wear.
             </p>
-          </div>
-          {/* big, centered capture buttons */}
-          <div className="max-w-xl mx-auto mt-5 h-44 lg:h-52">
-            <FilePicker onFiles={onFiles} multiple={false} cameraLabel="Snap the item" libraryLabel="Upload photo" fill />
           </div>
         </div>
       )}
