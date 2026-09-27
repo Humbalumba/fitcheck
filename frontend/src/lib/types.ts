@@ -236,3 +236,39 @@ export interface SuggestionsResponse {
   generated_at?: string;
   cached?: boolean;
 }
+
+/** "Worth a look" on the Should I buy? page (GET /api/suggestions/wardrobe). */
+export interface WardrobePick {
+  id: string; // product stored as a "suggestion" item (never in the closet) -> can go through the normal buy check
+  item: Item;
+  name: string;
+  brand?: string | null;
+  retailer?: string | null;
+  price: number | null;
+  currency?: string;
+  product_url: string;
+  link_ok?: boolean | null;
+  image_url?: string | null;
+  photo_url?: string | null;
+  category: Category;
+  subcategory?: string | null;
+  color?: string | null;
+  reason: string; // plain headline, e.g. "You don't have any shoes in My Closet yet"
+  pairs_line: string; // "Goes with 7 pieces you own"
+  details: string; // figures, shown only when expanded
+  total_new_outfits: number;
+  pieces_it_goes_with: number;
+  verdict?: { decision?: string; score?: number | null; reasons?: string[] };
+}
+
+export interface WardrobeSuggestionsResponse {
+  status: "ready" | "pending" | "error";
+  title?: string;
+  subtitle?: string;
+  suggestions: WardrobePick[];
+  reason?: string | null;
+  elapsed_s?: number;
+  cached?: boolean;
+  source?: string;
+  timing_s?: Record<string, number>;
+}

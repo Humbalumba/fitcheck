@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { prepareImage } from "@/lib/image";
-import type { Attributes, DetectResponse, EvaluateResponse, Item } from "@/lib/types";
+import type { Attributes, DetectResponse, EvaluateResponse, Item, WardrobePick } from "@/lib/types";
 import { categoryKey, categoryLabel, templateLabel } from "@/lib/constants";
 import { EST_PRICE_NOTE, cn, estMoney, money, pct, titleCase } from "@/lib/format";
 import { Button, Card, ErrorBanner, FormalityDots, ItemImage, PageTitle, Skeleton } from "@/components/ui";
@@ -31,6 +31,7 @@ import { OutfitCard } from "@/components/OutfitCard";
 import { OutfitModal } from "@/components/OutfitModal";
 import { SuggestionsSection } from "@/components/Suggestions";
 import { SustainabilityCard } from "@/components/Sustainability";
+import { WorthALook } from "@/components/WorthALook";
 import { useToast } from "@/components/Toast";
 
 type Step = "start" | "detecting" | "select" | "evaluating" | "result";
@@ -49,6 +50,8 @@ export default function BuyPage() {
   const [added, setAdded] = useState(false);
   const [adding, setAdding] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [pick, setPick] = useState<WardrobePick | null>(null); // "Worth a look" product being / been checked
+  const [pickBusy, setPickBusy] = useState<string | null>(null);
 
   useEffect(() => {
     if (step !== "detecting" && step !== "evaluating") return;
@@ -101,6 +104,8 @@ export default function BuyPage() {
     setResult(null);
     setAdded(false);
     setEditing(false);
+    setPick(null);
+    setPickBusy(null);
     if (clearPreview) setPreview(null);
     setStep("start");
   };
@@ -141,6 +146,25 @@ export default function BuyPage() {
     setPrice(String(p));
   };
 
+  /** "Worth a look" card tapped: run the normal buy check on that store product (it is already a scored item). */
+  const checkPick = async (p: WardrobePick) => {
+    if (pickBusy) return;
+    setError(null);
+    setPickBusy(p.id);
+    try {
+      const r = await api.evaluate(p.id, null);
+      setPick(p);
+      setResult(r);
+      setAdded(false);
+      setStep("result");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (e) {
+      toast((e as Error).message, "error");
+    } finally {
+      setPickBusy(null);
+    }
+  };
+
   const addToCloset = async () => {
     if (!result) return;
     setAdding(true);
@@ -159,12 +183,12 @@ export default function BuyPage() {
     return (
       <ResultView
         r={result}
-        fallbackImage={selItem?.image_url || selItem?.cutout_url}
+        fallbackImage={selItem?.image_url || selItem?.cutout_url || pick?.image_url || undefined}
         onAdd={addToCloset}
         adding={adding}
         added={added}
         onAgain={() => reset()}
-        onBack={() => setStep("select")}
+        onBack={() => (pick ? reset() : setStep("select"))}
         onRecheck={recheck}
       />
     );
@@ -181,23 +205,24 @@ export default function BuyPage() {
       )}
 
       {step === "start" && (
-        <div className="lg:grid lg:grid-cols-2 lg:gap-6 lg:items-center">
-          <Card className="p-5 mb-4 lg:mb-0 relative overflow-hidden">
-            <div className="absolute -right-12 -bottom-12 size-44 rounded-full bg-accent-soft" />
-            <div className="relative">
-              <div className="grid place-items-center size-12 rounded-2xl bg-ink text-white mb-3">
-                <ShoppingBag className="size-6" />
-              </div>
-              <h2 className="text-xl font-bold tracking-tight">Know before you buy</h2>
-              <p className="text-sm text-black/60 mt-1 max-w-sm">
-                We&apos;ll count how many <b>new outfits</b> it unlocks with your closet, check if you already own
-                something like it, and work out the cost per wear.
-              </p>
-            </div>
-          </Card>
-          <FilePicker onFiles={onFiles} multiple={false} cameraLabel="Snap the item" libraryLabel="Upload photo" />
+        <div className="pt-2 lg:pt-6">
+          {/* floating intro: plain text, no card */}
+          <div className="text-center max-w-md mx-auto">
+            <h2 className="text-2xl font-bold tracking-tight">Know before you buy</h2>
+            <p className="text-sm text-black/60 mt-1.5">
+              We&apos;ll count how many <b>new outfits</b> it unlocks with your closet, check if you already own
+              something like it, and work out the cost per wear.
+            </p>
+          </div>
+          {/* big, centered capture buttons */}
+          <div className="max-w-xl mx-auto mt-5 h-44 lg:h-52">
+            <FilePicker onFiles={onFiles} multiple={false} cameraLabel="Snap the item" libraryLabel="Upload photo" fill />
+          </div>
         </div>
       )}
+
+      {/* Store picks for the current closet: loads on its own (polls while the live search runs), never blocks */}
+      {step === "start" && <WorthALook onPick={checkPick} busyId={pickBusy} />}
 
       {(step === "detecting" || step === "select" || step === "evaluating") && preview && (
         <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">

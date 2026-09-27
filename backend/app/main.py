@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, gemini, pipeline, suggest
+from . import config, db, gemini, pipeline, suggest, wardrobe_suggest
 from .evaluate import evaluate as run_evaluate, sustainability_for, with_current_verdict, with_sustainability
 from .scoring import get_scorer, scorer_kind
 from .vectors import closet_index
@@ -40,6 +40,7 @@ def _warmup():
         if gemini.is_configured():
             gemini.model_name()
         log.info("Warmup complete (scorer=%s, gemini=%s)", scorer_kind(), gemini.is_configured())
+        wardrobe_suggest.warm()  # "Worth a look" picks for the current closet, in the background if not cached
     except Exception:
         log.exception("Warmup failed")
 
@@ -262,6 +263,20 @@ def get_evaluation_suggestions(evaluation_id: str):
     if cached is None:
         raise HTTPException(404, f"no suggestions yet for evaluation {evaluation_id}")
     return {**suggest.add_sustainability(cached), "cached": True}
+
+
+@app.get("/api/suggestions/wardrobe")
+def wardrobe_suggestions(refresh: bool = False, wait: float = 0.0):
+    """"Worth a look": 3-5 real products that fill gaps in the current closet (app/wardrobe_suggest.py).
+    Never blocks by default: status 'ready' (cached per closet contents), 'pending' (live search running in the
+    background; poll again) or 'error' (suggestions=[] + reason). wait=N blocks up to N seconds (max 150)."""
+    try:
+        return wardrobe_suggest.get(refresh=refresh, wait_s=max(0.0, min(150.0, wait)))
+    except Exception as e:
+        log.exception("wardrobe suggestions failed")
+        return {"status": "error", "suggestions": [], "title": wardrobe_suggest.TITLE,
+                "subtitle": wardrobe_suggest.SUBTITLE, "reason": "Couldn't look through stores right now.",
+                "detail": f"{type(e).__name__}: {e}"}
 
 
 @app.post("/api/candidate/{item_id}/add-to-closet")

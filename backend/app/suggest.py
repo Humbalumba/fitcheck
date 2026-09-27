@@ -382,6 +382,144 @@ def _looks_like_product_page(html_text: str) -> bool:
                           r'itemprop=["\']price|add to (?:bag|cart)', html_text[:MAX_HTML_BYTES], re.I))
 
 
+# ------------------------------------------------------------------ link validation (shared by every suggestion)
+# Root cause of "a denim jacket linked to a video for shoes": when the product_url Gemini wrote failed, fetch_product
+# fell back to grounding chunk URLs (Google redirect links to the pages Gemini *read*, which include YouTube videos,
+# blogs and review sites) and accepted the first one that returned 200, then took that page's og:image. Nothing
+# checked that the destination was a store or that it showed THIS product. Now every candidate link is resolved to
+# its final URL and must (a) not be a video / social / editorial page, (b) not be a search / error page, and (c) show
+# the product: page title / og:title / JSON-LD name shares a key word with the product name and names no OTHER
+# garment type (a 'denim jacket' card never links to a shoe page). Bot-walled store pages (403) can't be read, so
+# there the URL slug itself must name the product. Photos come from the validated page first.
+NON_SHOPPING_HOSTS = (
+    "youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "twitch.tv", "tiktok.com", "instagram.com",
+    "facebook.com", "fb.com", "pinterest.com", "pin.it", "reddit.com", "x.com", "twitter.com", "threads.net",
+    "wikipedia.org", "wikimedia.org", "medium.com", "substack.com", "blogspot.com", "wordpress.com", "tumblr.com",
+    "quora.com", "gq.com", "esquire.com", "nytimes.com", "nymag.com", "buzzfeed.com", "businessinsider.com",
+    "insider.com", "forbes.com", "cnn.com", "vogue.com", "elle.com", "hypebeast.com", "highsnobiety.com",
+    "complex.com", "whowhatwear.com", "refinery29.com", "reviewed.com", "usatoday.com", "theguardian.com",
+    "cosmopolitan.com", "menshealth.com", "mensjournal.com", "popsugar.com", "wired.com", "theverge.com",
+    "rtings.com", "runrepeat.com", "google.com", "googleusercontent.com", "bing.com", "yahoo.com",
+    "apple.com", "spotify.com", "linkedin.com", "snapchat.com", "imdb.com",
+)
+_NON_SHOP_HOST_RE = re.compile(r"(^|\.)(blog|blogs|news|magazine|mag|editorial|stories|journal)\.", re.I)
+_NON_SHOP_PATH_RE = re.compile(r"/(blog|blogs|news|article|articles|stories|story|journal|magazine|editorial|watch|"
+                               r"video|videos|shorts|reel|reels|review|reviews|guide|guides|best-[a-z-]+)(/|$|\?)",
+                               re.I)
+_BAD_LANDING_RE = re.compile(r"no-?results|noresult|notfound|not-found|/404|/error|/search[/?]|/s/|[?&](q|query|"
+                             r"searchTerm|keyword)=|/sitemap", re.I)
+_STOP = {"the", "and", "for", "with", "mens", "men", "womens", "women", "unisex", "new", "shop", "buy", "online",
+         "sale", "size", "fit", "style", "from", "our", "your", "official", "store", "usa", "com", "www", "in", "of"}
+
+
+def is_non_shopping_url(url: str | None) -> bool:
+    """Videos, social media, wikis, blogs / news / review sites, search engines: never a product link."""
+    h = _host(url).lower()
+    if not h:
+        return True
+    if any(h == d or h.endswith("." + d) for d in NON_SHOPPING_HOSTS) or _NON_SHOP_HOST_RE.search(h + "."):
+        return True
+    try:
+        path = urlparse(url or "").path or ""
+    except ValueError:
+        return True
+    return bool(_NON_SHOP_PATH_RE.search(path))
+
+
+def is_bad_landing(url: str | None) -> bool:
+    """Search / 'no results' / error / home page instead of a product page."""
+    if not url:
+        return True
+    try:
+        path = urlparse(url).path or ""
+    except ValueError:
+        return True
+    return bool(_BAD_LANDING_RE.search(url)) or path.strip("/") == ""
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in re.findall(r"[a-z0-9]+", (text or "").lower().replace("'", "")) if len(t) >= 3 and t not in _STOP}
+
+
+def page_title_text(html_text: str) -> str:
+    """<title>, og:title / twitter:title and JSON-LD Product names of a page (what the page says it sells)."""
+    h = html_text[:600_000]
+    out = []
+    m = re.search(r"<title[^>]*>(.*?)</title>", h, re.I | re.S)
+    if m:
+        out.append(m.group(1))
+    for pat in (r'<meta[^>]+(?:property|name)=["\'](?:og:title|twitter:title)["\'][^>]*content=["\']([^"\']+)',
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name)=["\'](?:og:title|twitter:title)["\']',
+                r'"@type"\s*:\s*"Product"[^{}]{0,400}?"name"\s*:\s*"([^"]{3,200})"',
+                r'"name"\s*:\s*"([^"]{3,200})"[^{}]{0,400}?"@type"\s*:\s*"Product"'):
+        out += re.findall(pat, h, re.I | re.S)[:3]
+    return _html.unescape(" | ".join(x.strip() for x in out if x and x.strip()))[:1000]
+
+
+def _name_tokens(p: dict) -> set[str]:
+    brand = _tokens(f"{p.get('brand') or ''} {p.get('retailer') or ''}")
+    return _tokens(p.get("name") or "") - brand
+
+
+def _type_tokens(p: dict) -> set[str]:
+    return _tokens(p.get("subcategory") or "") - {"top", "bottom"}
+
+
+def text_matches_product(p: dict, text: str) -> tuple[bool, str]:
+    """Does this page title / URL slug describe THIS product? Needs a shared key word from the product name or type,
+    and the text must not name a different garment category (denim jacket card vs a shoe page)."""
+    text_l = (text or "").lower().replace("-", " ").replace("_", " ")
+    toks = _tokens(text_l)
+    cat = p.get("_category") or normalize_category(p)
+    other = guess_category_from_label(text_l)
+    if other and cat and other != cat and other in SUPPORTED:
+        own = guess_category_from_label(f"{p.get('subcategory') or ''} {p.get('name') or ''}".lower())
+        if own != other:
+            return False, f"page is about {other}, not {cat}"
+    name_hit = _name_tokens(p) & toks
+    type_hit = _type_tokens(p) & toks
+    if name_hit or type_hit:
+        return True, ""
+    return False, "page doesn't mention the product"
+
+
+def check_link(p: dict, url: str, status: int | None, html_text: str) -> tuple[bool, str]:
+    """-> (ok, reason). A resolved destination is kept only if it's a store page for this product."""
+    if REDIRECT_HOST in _host(url):
+        return False, "grounding redirect didn't resolve"
+    if is_non_shopping_url(url):
+        return False, f"not a store page ({_host(url)})"
+    if is_bad_landing(url):
+        return False, "search / error page"
+    if status == 200 and html_text:
+        title = page_title_text(html_text)
+        if title:
+            ok, why = text_matches_product(p, title)
+            if ok:
+                return True, ""
+            slug_ok, _ = text_matches_product(p, urlparse(url).path)
+            return (slug_ok and not guess_category_from_label(title.lower())), why
+    # bot wall / no readable HTML: the URL itself has to name the product
+    return text_matches_product(p, urlparse(url).path)
+
+
+_page_cache: dict[str, tuple[float, tuple]] = {}
+PAGE_CACHE_TTL_S = 1800
+
+
+def _get_page_cached(client, url: str):
+    """Product-page GET with a 30-min in-memory cache (the same links recur across refreshes / evaluations)."""
+    hit = _page_cache.get(url)
+    if hit and time.time() - hit[0] < PAGE_CACHE_TTL_S:
+        return hit[1]
+    res = _get(client, url, PAGE_ACCEPT, MAX_HTML_BYTES)
+    if res[0] is not None:
+        if len(_page_cache) > 300:
+            _page_cache.clear()
+        _page_cache[url] = (time.time(), res)
+    return res
+
+
 def fetch_product(p: dict, grounded: dict) -> dict:
     """Verify the product link and fetch a photo. Adds: product_url (resolved), link_status (HTTP code or None),
     link_ok (bool|None: None = bot wall, unverified), image (PIL) + image_source_url, or fetch_error."""
@@ -390,31 +528,38 @@ def fetch_product(p: dict, grounded: dict) -> dict:
     with _client() as c:
         tried: list[str] = []
         page_html, page_url, status = "", None, None
+        link_rejects: list[str] = []
         candidates = ([p["product_url"]] if p.get("product_url") else []) + grounding_urls_for(p, grounded)
-        for u in candidates[:4]:
-            if u in tried:
+        for u in candidates[:5]:
+            if u in tried or (REDIRECT_HOST not in _host(u) and is_non_shopping_url(u)):
                 continue
             tried.append(u)
-            st, final, ct, body = _get(c, u, PAGE_ACCEPT, MAX_HTML_BYTES)
+            st, final, ct, body = _get_page_cached(c, u)
             if st is None or st in (404, 410) or st >= 500:
                 status = status or st
                 continue
-            if REDIRECT_HOST in (_host(final) or ""):  # redirect didn't resolve
-                continue
             h = body.decode("utf-8", "ignore") if ct and "html" in ct else ""
-            if page_url is None:
-                page_url, status, page_html = final, st, h
-            elif st == 200 and _looks_like_product_page(h):
-                # the stated URL is behind a bot wall; a search-result page that IS a product page is better
+            ok, why = check_link(p, final, st, h)
+            if not ok:
+                link_rejects.append(f"{_host(final)}: {why}")
+                continue
+            if page_url is None or (status != 200 and st == 200):
                 page_url, status, page_html = final, st, h
             if status == 200:
                 break
+        if page_url is None:  # never show a link we couldn't match to the product
+            p["product_url"], p["link_status"], p["link_ok"], p["image"] = None, status, False, None
+            p["fetch_error"] = "no store link matching the product" + (f" ({link_rejects[0]})" if link_rejects else "")
+            p["link_rejects"] = link_rejects
+            p["fetch_s"] = round(time.time() - t0, 2)
+            return p
         p["product_url"] = page_url or p.get("product_url")
         p["link_status"] = status
         p["link_ok"] = True if status == 200 else (None if status in (401, 403, 429, 503) else False)
         p["product_page"] = _looks_like_product_page(page_html) if page_html else None
         img = None
-        img_urls = ([p["image_url"]] if p.get("image_url") else []) + _page_images(page_html, page_url or "")
+        img_urls = _page_images(page_html, page_url or "") + ([p["image_url"]] if p.get("image_url") else [])
+        img_urls = [u for u in img_urls if not is_non_shopping_url(u) or "cdn" in _host(u)]
         if p.get("shopify_js"):
             cat = p.get("_category") or p.get("category") or "top"
             better = _best_shopify_image(c, p["shopify_js"], cat, featured=p.get("image_url"))

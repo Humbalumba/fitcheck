@@ -7,6 +7,7 @@ import type {
   Settings,
   SuggestionsResponse,
   Sustainability,
+  WardrobeSuggestionsResponse,
 } from "./types";
 import { mockApi } from "./mock";
 
@@ -152,6 +153,12 @@ const realApi = {
       `/api/evaluations/${encodeURIComponent(evaluationId)}/suggestions${refresh ? "?refresh=true" : ""}`,
       { method: "POST", timeoutMs: 150_000 },
     ),
+
+  /** "Worth a look" picks for the current closet. Never blocks: status "pending" while the live search runs. */
+  wardrobeSuggestions: (refresh = false) =>
+    request<WardrobeSuggestionsResponse>(`/api/suggestions/wardrobe${refresh ? "?refresh=true" : ""}`, {
+      timeoutMs: 20_000,
+    }),
 
   /** Sustainability from an item's latest saved evaluation (404 if it was never evaluated). */
   itemSustainability: (itemId: string) =>

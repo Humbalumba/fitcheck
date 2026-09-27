@@ -11,6 +11,7 @@ export function FilePicker({
   compact,
   cameraLabel = "Take photo",
   libraryLabel,
+  fill,
 }: {
   onFiles: (files: File[]) => void;
   multiple?: boolean;
@@ -18,6 +19,8 @@ export function FilePicker({
   compact?: boolean;
   cameraLabel?: string;
   libraryLabel?: string;
+  /** Stretch to the parent's height (e.g. to match a card beside / above it) instead of the fixed h-28. */
+  fill?: boolean;
 }) {
   const cam = useRef<HTMLInputElement>(null);
   const lib = useRef<HTMLInputElement>(null);
@@ -27,7 +30,7 @@ export function FilePicker({
     e.target.value = "";
   };
   return (
-    <div className={cn("grid grid-cols-2 gap-2.5", disabled && "opacity-50 pointer-events-none")}>
+    <div className={cn("grid grid-cols-2", fill ? "h-full gap-4" : "gap-2.5", disabled && "opacity-50 pointer-events-none")}>
       <input ref={cam} type="file" accept="image/*" capture="environment" className="hidden" onChange={handle} />
       <input ref={lib} type="file" accept="image/*" multiple={multiple} className="hidden" onChange={handle} />
       <button
@@ -35,10 +38,10 @@ export function FilePicker({
         onClick={() => cam.current?.click()}
         className={cn(
           "flex items-center justify-center gap-2 rounded-2xl bg-ink text-white font-semibold active:scale-[0.98] transition",
-          compact ? "h-12 text-sm" : "flex-col h-28 text-[15px]",
+          compact ? "h-12 text-sm" : cn("flex-col", fill ? "h-full min-h-28 text-base gap-3 rounded-3xl" : "h-28 text-[15px]"),
         )}
       >
-        <Camera className={compact ? "size-4" : "size-7"} />
+        <Camera className={compact ? "size-4" : fill ? "size-9" : "size-7"} />
         {cameraLabel}
       </button>
       <button
@@ -46,10 +49,10 @@ export function FilePicker({
         onClick={() => lib.current?.click()}
         className={cn(
           "flex items-center justify-center gap-2 rounded-2xl bg-white border border-black/10 font-semibold active:scale-[0.98] transition",
-          compact ? "h-12 text-sm" : "flex-col h-28 text-[15px]",
+          compact ? "h-12 text-sm" : cn("flex-col", fill ? "h-full min-h-28 text-base gap-3 rounded-3xl" : "h-28 text-[15px]"),
         )}
       >
-        <Images className={compact ? "size-4" : "size-7"} />
+        <Images className={compact ? "size-4" : fill ? "size-9" : "size-7"} />
         {libraryLabel ?? (multiple ? "Choose photos" : "Choose photo")}
       </button>
     </div>

@@ -9,6 +9,7 @@ import type {
   Outfit,
   Settings,
   SuggestionsResponse,
+  WardrobeSuggestionsResponse,
   Sustainability,
 } from "./types";
 import { categoryKey, colorToCss } from "./constants";
@@ -343,6 +344,11 @@ export const mockApi = {
       suggestions: [],
       message: "Shopping suggestions need the real backend (live product search).",
     };
+  },
+
+  async wardrobeSuggestions(): Promise<WardrobeSuggestionsResponse> {
+    await sleep(600);
+    return { status: "error", suggestions: [], reason: "Store picks need the real backend (live product search)." };
   },
 
   async itemSustainability(itemId: string): Promise<Sustainability & { evaluated_at?: string }> {
