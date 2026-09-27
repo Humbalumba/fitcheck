@@ -1197,6 +1197,9 @@ def _safe_render(item_id: str, mode: str) -> None:
             _save(item_id, status="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
         except Exception:
             pass
+    finally:
+        from . import persist
+        persist.save(f"render {item_id}")  # background DB/media write (no-op unless persisting to Blob)
 
 
 def schedule(item_ids: list[str], mode: str = "auto") -> None:

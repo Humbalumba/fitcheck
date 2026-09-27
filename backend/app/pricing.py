@@ -273,6 +273,8 @@ def start_background_backfill() -> bool:
             if s["items_needing_estimate"]:
                 log.info("price backfill: %d items (%d gemini, %d table)%s", s["items_needing_estimate"],
                          s["gemini_estimates"], s["table_estimates"], f"; {s['error']}" if s["error"] else "")
+                from . import persist
+                persist.save("price backfill")
         except Exception:
             log.exception("price backfill failed")
 

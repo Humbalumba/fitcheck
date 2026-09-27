@@ -629,6 +629,8 @@ def _run(key: str, closet: list[dict], settings: dict) -> None:
     finally:
         with _guard:
             _jobs.pop(key, None)
+        from . import persist
+        persist.save("wardrobe suggestions")  # background DB write (no-op unless persisting to Blob)
 
 
 def start(key: str, closet: list[dict], settings: dict) -> dict:

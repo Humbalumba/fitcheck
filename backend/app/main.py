@@ -6,12 +6,13 @@ import os
 import threading
 from typing import Any, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
-from . import config, db, gemini, pipeline, suggest, wardrobe_suggest
+from . import config, db, gemini, persist, pipeline, suggest, wardrobe_suggest
 from .evaluate import evaluate as run_evaluate, sustainability_for, with_current_verdict, with_sustainability
 from .scoring import get_scorer, scorer_kind
 from .vectors import closet_index
@@ -27,6 +28,19 @@ app.add_middleware(
     allow_origin_regex=".*",  # dev: any origin
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _persist_after_write(request: Request, call_next):
+    """On Vercel (app/persist.py): after a successful mutating /api request, save the state to Blob BEFORE
+    responding (the instance may be frozen right after the response). No-op locally; never fails the request."""
+    response = await call_next(request)
+    if (request.method in ("POST", "PUT", "PATCH", "DELETE") and request.url.path.startswith("/api/")
+            and response.status_code < 400 and persist.enabled()):
+        await run_in_threadpool(persist.save, f"{request.method} {request.url.path}")
+    return response
+
+
 app.mount("/media", StaticFiles(directory=str(config.MEDIA_DIR)), name="media")
 
 
