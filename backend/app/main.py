@@ -199,7 +199,7 @@ def get_item(item_id: str):
 
 
 class RenderBody(BaseModel):
-    mode: str = "auto"   # auto (Gemini redraw if available + verified, else template, else cleanup) | gemini | template | cleanup
+    mode: str = "auto"   # auto (one Gemini redraw if available, else template, else cleanup) | gemini | template | cleanup
     wait: bool = False   # true: render synchronously and return the finished item
 
 
@@ -219,7 +219,7 @@ def render_item(item_id: str, body: Optional[RenderBody] = None):
     mode = _render_mode(body.mode)
     if body.wait:
         try:
-            render.render_item(item_id, mode)
+            render.render_now(item_id, mode)  # waits its turn in the single render queue
         except Exception as e:
             log.exception("render failed")
             raise HTTPException(500, f"render failed: {type(e).__name__}: {e}")

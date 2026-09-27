@@ -5,7 +5,7 @@ colours, material/fabric, pattern, brand, description) plus the structured garme
 was photographed, neckline, sleeve length, closure, hood, pockets, ribbing, fit, length, lining/hardware/stitch
 colours and every logo/text/graphic with its position and orientation). Each garment type gets a canonical
 brand-catalogue presentation spec so the output looks like an isolated e-commerce product shot, not a cleaned-up
-snapshot. Verification of the result is unchanged (app/render.verify_render)."""
+snapshot. The result is not verified: one image call per item (app/render._try_gemini)."""
 from __future__ import annotations
 
 import re

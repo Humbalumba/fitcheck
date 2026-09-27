@@ -155,22 +155,23 @@ never changes the verdict (an estimator error just yields `null`). Suggestions g
 near-duplicate black cami 44 D). It's an estimate: generic fibre factors, no durability model, modelled wear curve.
 
 ## Clean product images (`app/render.py`, `app/render_template.py`, `app/render_prompt.py`)
-Every closet item gets a display-only catalogue image (embeddings keep using the original cutout, except a
-*verified* Gemini redraw). Priority: **Gemini redraw** (if available & verified) > **canonical template** > **cleanup**.
+Every closet item gets a display-only catalogue image (embeddings keep using the original cutout unless
+`RENDER_EMBED_FROM_CLEAN=1`). Priority: **Gemini redraw** (if available) > **canonical template** > **cleanup**.
+Renders run on ONE background worker, strictly one at a time in the order items were added; each item flips to
+`render_status='done'` as soon as its own image is saved.
 - *Gemini redraw*: attribute-driven, canonical-pose prompt (`render_prompt.py`: garment type/view/neckline/sleeves/
   closure/hood/pockets/lining/hardware + every logo with its position) plus the template render as a pose schematic
-  (image 3); verified by fashion-clip + LAB colour + a Gemini vision QA call; one retry with the QA issues.
+  (image 3); exactly one image-generation call per item (no QA pass, no retry); on error / no image -> template.
 - *Template* (no image generation): procedural brand-style garment templates (`garment_templates.py`: tee, V-neck,
   long-sleeve, sweater, polo, hoodie, zip hoodie, jacket, jeans, trousers, shorts, skirt, dresses) recoloured with the
   robust LAB fabric colour, real logo pixels transplanted upright at their anchor; patterned / multi-colour /
   unsupported items fall back to the cleanup.
 - *Cleanup*: segmentation + gentle tone/WB + tilt fix on a white 1024² canvas.
-- `GEMINI_IMAGE_API_KEY` in `backend/.env` (or env) = key for image generation + QA (e.g. billing-enabled); falls back
+- `GEMINI_IMAGE_API_KEY` in `backend/.env` (or env) = key for image generation (e.g. billing-enabled); falls back
   to `GEMINI_API_KEY`. The quota auto-disable (`data/render_state.json`, stores only a sha256 prefix of the key)
   resets automatically when this key changes. Other knobs: `RENDER_GEMINI=auto|on|off`, `RENDER_TEMPLATE=0`,
-  `RENDER_POSE_REF=0`, `RENDER_MODEL`, `RENDER_CLIP_MIN` (0.75, vs the cleanup cutout) and
-  `RENDER_CLIP_MIN_TEMPLATE` (0.65, vs the canonical template render; only counts when the Gemini vision QA ran and
-  passed, because a flat-lay re-layout legitimately scores lower against the crumpled cutout).
+  `RENDER_POSE_REF=0`, `RENDER_MODEL`, `RENDER_FALLBACK_MODELS` (used for later items once the primary model is
+  quota-blocked; never a second call for the same item).
 - Re-render the closet: `python scripts/render_closet.py [--mode auto|gemini|template|cleanup] [--dry-run] [--ids ..]`
   (drives the running backend; `--local` renders in-process).
 
