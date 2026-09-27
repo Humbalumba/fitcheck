@@ -131,6 +131,7 @@ def add_closet_items(body: AddItemsBody):
         items = pipeline.add_to_closet(body.item_ids, body.attributes_overrides)
     except pipeline.AccessoryNotAllowed as e:
         raise HTTPException(422, str(e))
+    wardrobe_suggest.closet_changed()
     return {"items": [pipeline.item_to_api(i) for i in items]}
 
 
@@ -143,7 +144,9 @@ def list_closet(category: Optional[str] = None):
 def patch_item(item_id: str, body: PatchBody):
     _item_or_404(item_id)
     try:  # category can't become 'accessory' (or anything outside top/bottom/dress/outerwear/shoes)
-        return pipeline.item_to_api(pipeline.update_attributes(item_id, body.attributes))
+        out = pipeline.item_to_api(pipeline.update_attributes(item_id, body.attributes))
+        wardrobe_suggest.closet_changed()
+        return out
     except pipeline.AccessoryNotAllowed as e:
         raise HTTPException(422, str(e))
 
@@ -152,6 +155,7 @@ def patch_item(item_id: str, body: PatchBody):
 def delete_item(item_id: str):
     _item_or_404(item_id)
     pipeline.delete_item(item_id)
+    wardrobe_suggest.closet_changed()
     return {"ok": True}
 
 
@@ -283,7 +287,9 @@ def wardrobe_suggestions(refresh: bool = False, wait: float = 0.0):
 def candidate_to_closet(item_id: str):
     _item_or_404(item_id)
     try:
-        return pipeline.item_to_api(pipeline.add_to_closet([item_id], purchased=True)[0])
+        out = pipeline.item_to_api(pipeline.add_to_closet([item_id], purchased=True)[0])
+        wardrobe_suggest.closet_changed()
+        return out
     except pipeline.AccessoryNotAllowed as e:
         raise HTTPException(422, str(e))
 
@@ -297,4 +303,6 @@ def get_settings():
 def put_settings(body: SettingsBody):
     # exclude_unset: only fields the client sent (unknown / retired keys are ignored by the model)
     partial = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
-    return db.update_settings(partial)
+    out = db.update_settings(partial)
+    wardrobe_suggest.closet_changed()
+    return out

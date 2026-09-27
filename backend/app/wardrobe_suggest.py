@@ -664,6 +664,24 @@ def get(refresh: bool = False, wait_s: float = 0.0) -> dict:
             "reason": None, "elapsed_s": round(time.time() - job["started"], 1)}
 
 
+_kick: threading.Timer | None = None
+KICK_DELAY_S = float(os.environ.get("FITCHECK_WARDROBE_KICK_S", "6"))
+
+
+def closet_changed() -> None:
+    """Called after any closet / settings change: start a fresh "Worth a look" search for the new closet in the
+    background. Debounced so adding several items in a row runs ONE search (fewer store requests, less blocking)."""
+    global _kick
+    if os.environ.get("FITCHECK_WARDROBE_WARM", "1") == "0":
+        return
+    with _guard:
+        if _kick is not None:
+            _kick.cancel()
+        _kick = threading.Timer(KICK_DELAY_S, warm)
+        _kick.daemon = True
+        _kick.start()
+
+
 def warm() -> None:
     """Startup: compute the current closet's picks in the background if they aren't cached yet."""
     if os.environ.get("FITCHECK_WARDROBE_WARM", "1") == "0" or not gemini.is_configured():
