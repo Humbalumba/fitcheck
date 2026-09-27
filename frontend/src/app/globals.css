@@ -75,6 +75,26 @@ body {
 .skeleton-soft {
   background-color: #e6dcce;
 }
+/* Image-box loading shimmer (LoadingImg / ItemImage): muted beige with a soft moving highlight.
+   Percentage-based so the sweep reads the same in a 72px thumb and a full-width sheet image. */
+@keyframes img-shimmer {
+  0% { background-position: 150% 0; }
+  100% { background-position: -50% 0; }
+}
+.img-shimmer {
+  pointer-events: none;
+  background-color: #e4d8c8;
+  background-image: linear-gradient(100deg, rgba(255, 250, 243, 0) 30%, rgba(255, 250, 243, 0.55) 50%, rgba(255, 250, 243, 0) 70%);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: img-shimmer 1.4s ease-in-out infinite;
+}
+/* load failed: stop moving, leave a neutral muted box under the fallback */
+.img-shimmer-off {
+  animation: none;
+  background-image: none;
+  background-color: #efe8de;
+}
 /* Sweep of light over an image that is still being worked on (e.g. "Polishing…") */
 @keyframes sweep {
   0% { transform: translateX(-100%); }
@@ -236,5 +256,6 @@ input[type="range"] {
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton { animation: skeleton-pulse 2.4s infinite ease-in-out; background-image: none; }
+  .img-shimmer { animation: none; background-image: none; }
   .working-sweep::after { animation: none; }
 }

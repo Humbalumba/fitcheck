@@ -127,8 +127,9 @@ export function Skeleton({ className, soft }: { className?: string; soft?: boole
 }
 
 /**
- * <img> that shows a pulsing placeholder until it has loaded, then fades in. Fills its (relative) parent:
- * pass sizing / object-fit classes via className.
+ * <img> that shows a shimmer skeleton until it has loaded, then fades in (~200ms). Fills its (relative) parent:
+ * pass sizing / object-fit classes via className. On error the shimmer stops and `onError` lets the caller
+ * swap in a fallback (or a neutral placeholder is left behind).
  */
 export function LoadingImg({
   src,
@@ -146,33 +147,69 @@ export function LoadingImg({
   const ref = useRef<HTMLImageElement>(null);
   // Images preloaded earlier in this session (e.g. by the landing intro) show at once: no skeleton, no fade.
   const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (isImageLoaded(src) ? src : null));
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const loaded = loadedSrc === src || isImageLoaded(src);
-  const onLoad = () => {
+  const failed = failedSrc === src;
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  });
+  const handleLoad = () => {
     markImageLoaded(src);
     setLoadedSrc(src);
   };
-  // Already-cached images can finish before React attaches onLoad (e.g. after hydration).
+  const handleError = () => {
+    setFailedSrc(src);
+    onErrorRef.current?.();
+  };
+  // Cached images can finish (or fail) before React attaches onLoad/onError (e.g. before hydration),
+  // so check the element itself once mounted, or the shimmer would never go away.
   useEffect(() => {
     const el = ref.current;
-    if (!el || !el.complete || !el.naturalWidth) return;
-    const t = setTimeout(() => {
-      markImageLoaded(src);
-      setLoadedSrc(src);
-    }, 0);
-    return () => clearTimeout(t);
+    if (!el || !el.complete) return;
+    let live = true;
+    if (el.naturalWidth) {
+      const t = setTimeout(() => {
+        markImageLoaded(src);
+        setLoadedSrc(src);
+      }, 0);
+      return () => clearTimeout(t);
+    }
+    // complete with no pixels: broken, or an SVG without intrinsic size. decode() tells them apart.
+    el.decode().then(
+      () => {
+        if (!live) return;
+        markImageLoaded(src);
+        setLoadedSrc(src);
+      },
+      () => {
+        if (!live) return;
+        setFailedSrc(src);
+        onErrorRef.current?.();
+      },
+    );
+    return () => {
+      live = false;
+    };
   }, [src]);
   return (
     <>
-      {!loaded && <span aria-hidden className="skeleton absolute inset-0" />}
+      {!loaded && <span aria-hidden className={cn("img-shimmer absolute inset-0", failed && "img-shimmer-off")} />}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         ref={ref}
         src={src}
         alt={alt}
         loading={lazy ? "lazy" : undefined}
-        onLoad={onLoad}
-        onError={onError}
-        className={cn("transition-opacity duration-300", loaded ? "opacity-100" : "opacity-0", className)}
+        decoding="async"
+        onLoad={handleLoad}
+        onError={handleError}
+        className={cn(
+          "transition-opacity duration-200 ease-out",
+          loaded ? "opacity-100" : "opacity-0",
+          failed && "invisible",
+          className,
+        )}
       />
     </>
   );
