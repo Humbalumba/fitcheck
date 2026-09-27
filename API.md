@@ -87,6 +87,47 @@ also in the offline fallback). A photo with only accessories returns `items: []`
 }
 ```
 
+## POST /api/detect-url
+"Paste a link" on *Should I buy?*: the same as `POST /api/detect`, but the photo comes from a product page.
+JSON body: `{"url": "https://store.com/products/linen-shirt", "purpose": "candidate"}` (`purpose` optional,
+`closet` | `candidate`, default `candidate`; a bare `store.com/products/...` gets `https://`).
+The backend (`backend/app/product_link.py`) fetches the page (browser User-Agent, 10 s timeout, size caps), reads
+the listing from, in order: Shopify's public `<product-url>.js` JSON (any Shopify store, even if the HTML page is
+bot-walled; the `?variant=` in the link picks price/color/photo), JSON-LD `Product`, og:/product: meta tags. It
+picks the product photo (a white-background product-only shot among the first 5 wins, else the first photo that
+decodes; a direct image link also works) and runs the normal Stage 1-2 pipeline on it (Gemini boxes + attributes,
+segformer cutout), so the response is a `DetectResponse` like `/api/detect`, plus:
+```json
+{
+  "source": "url",
+  "suggested_item_id": "it_...",        // detected item that best matches the listing's garment type; also items[0]
+  "product": {"url": "https://store.com/products/linen-shirt", "final_url": "https://store.com/products/linen-shirt",
+              "title": "Organic Linen Camp Shirt", "brand": "Marine Layer", "retailer": "Marine Layer",
+              "price": 98.0, "currency": "USD",          // price only for USD listings (else null + the currency)
+              "color": "Sage", "description": "Breezy organic linen camp-collar shirt.", "product_type": "Shirts",
+              "image_source_url": "https://cdn.shopify.com/...", "photo_kind": "product_only",  // | "photo"
+              "source": "shopify"}                         // | "json-ld" | "meta" | "image"
+}
+```
+The suggested item's attributes get the listing merged in: `product_url`, `listing_title` / `listing_retailer` /
+`listing_description` / `listing_color` / `listing_price` / `listing_currency`, `brand` if Gemini didn't read one,
+and `price` = the listed USD price with `price_source: "listing"` (counts as a real price like a tag; never
+replaces a price already on the item). The UI pre-fills the price box with it so the user can confirm or change it;
+without a listed price the usual estimate applies. Everything after this is the normal flow (`POST /api/evaluate`,
+suggestions, sustainability, `add-to-closet`).
+
+**Safety (SSRF):** only `http`/`https`, standard ports, no `user:pass@`; the host, every redirect hop and every image
+URL must resolve to public IPs only (localhost, private, link-local / cloud-metadata, `.local`/`.internal` names are
+refused). `FITCHECK_LINK_ALLOW_NETS` (comma CIDRs) marks extra ranges as public, only for machines whose DNS returns
+proxy "fake IPs" (e.g. `198.18.0.0/15`); loopback/link-local stay blocked regardless.
+
+Errors (`detail` is a friendly sentence; the ones about the page suggest uploading a photo instead):
+`400` invalid / non-web / private link or unknown host · `422` page blocks automated access (bot wall, 401/403/429),
+page not found (404/410), link lands on a search / home / error page, no product photo, photo not downloadable ·
+`502` site unreachable / too many redirects · `504` site too slow · `500` detection failed.
+Limitations: pages that render only with JavaScript and bot-protected big retailers (e.g. Zara, H&M, Levi's,
+Patagonia, Madewell in testing) can't be read; non-USD prices aren't pre-filled.
+
 ## POST /api/closet/items
 Moves detected (or candidate) items into the closet; computes embeddings and updates the FAISS index.
 ```json

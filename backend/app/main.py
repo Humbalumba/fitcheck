@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from . import config, db, gemini, persist, pipeline, suggest, wardrobe_suggest
+from . import config, db, gemini, persist, pipeline, product_link, suggest, wardrobe_suggest
 from .evaluate import evaluate as run_evaluate, sustainability_for, with_current_verdict, with_sustainability
 from .scoring import get_scorer, scorer_kind
 from .vectors import closet_index
@@ -71,6 +71,11 @@ def _startup():
 class AddItemsBody(BaseModel):
     item_ids: list[str]
     attributes_overrides: Optional[dict[str, dict[str, Any]]] = None
+
+
+class DetectUrlBody(BaseModel):
+    url: str
+    purpose: Optional[str] = "candidate"
 
 
 class PatchBody(BaseModel):
@@ -134,6 +139,21 @@ def detect(file: UploadFile = File(...), purpose: Optional[str] = Form(None)):
         return pipeline.detect(data, purpose or None)
     except Exception as e:
         log.exception("detect failed")
+        raise HTTPException(500, f"detection failed: {type(e).__name__}: {e}")
+
+
+@app.post("/api/detect-url")
+def detect_url(body: DetectUrlBody):
+    """Like /api/detect, but from a pasted product link: fetch the page, take its product photo (plus title / brand /
+    price / color / description when available) and run the same detection pipeline (app/product_link.py)."""
+    if body.purpose not in (None, "", "closet", "candidate"):
+        raise HTTPException(422, "purpose must be 'closet' or 'candidate'")
+    try:
+        return product_link.detect_from_url(body.url, body.purpose or None)
+    except product_link.LinkError as e:
+        raise HTTPException(e.status, str(e))
+    except Exception as e:
+        log.exception("detect-url failed")
         raise HTTPException(500, f"detection failed: {type(e).__name__}: {e}")
 
 
