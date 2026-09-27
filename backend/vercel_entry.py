@@ -15,8 +15,32 @@ _t0 = time.time()
 HERE = Path(__file__).resolve().parent
 SEED = HERE / "seed_data"
 RUN = Path(os.environ.get("FITCHECK_DATA_DIR", "/tmp/fitcheck"))
+USER_TABLES = ("outfit_items", "outfits", "compat_edges", "item_embeddings", "item_render_details", "item_renders",
+               "suggestions", "wardrobe_suggestions", "evaluations", "items", "photos")
+
+
+def _start_empty(run: Path) -> None:
+    """Fresh instance = empty closet (keeps only the saved settings / profile). FITCHECK_START_EMPTY=0 keeps the seed."""
+    import sqlite3
+    c = sqlite3.connect(run / "fitcheck.db")
+    c.execute("PRAGMA foreign_keys=OFF")
+    for t in USER_TABLES:
+        try:
+            c.execute(f"DELETE FROM {t}")
+        except sqlite3.OperationalError:
+            pass
+    c.commit()
+    c.close()
+    for f in run.glob("closet.*"):
+        f.unlink()
+    shutil.rmtree(run / "media", ignore_errors=True)
+    (run / "media").mkdir(exist_ok=True)
+
+
 if not (RUN / "fitcheck.db").exists() and SEED.exists():
     shutil.copytree(SEED, RUN, dirs_exist_ok=True)
+    if os.environ.get("FITCHECK_START_EMPTY", "1") != "0":
+        _start_empty(RUN)
 os.environ["FITCHECK_DATA_DIR"] = str(RUN)
 os.environ.setdefault("HF_HOME", str(HERE / "models" / "hf"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")          # never try to refresh the read-only HF cache
