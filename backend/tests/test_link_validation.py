@@ -88,3 +88,107 @@ def test_fetch_product_skips_video_grounding_link_and_uses_matching_store_page(m
     monkeypatch.setattr(suggest, "grounding_urls_for", lambda p, g: ["https://redirect/video"])
     out = suggest.fetch_product(dict(JACKET), {})
     assert out["product_url"] is None and out["image"] is None and "no store link" in out["fetch_error"]
+
+
+
+WRANGLER = """<html><head><title>Wrangler\u00ae Blanket Lined Denim Jacket | COLLECTIONS | Wrangler\u00ae</title>
+<meta property="og:title" content="Blanket Lined Denim Jacket">
+<script type="application/ld+json">{"@context": "https://schema.org", "@graph": [{"@type": "BreadcrumbList"},
+ {"@type": "Product", "name": "Wrangler&reg; Blanket Lined Denim Jacket", "brand": {"@type": "Brand", "name": "Wrangler"},
+  "image": ["//www.wrangler.com/img/flat.jpg", "https://www.wrangler.com/img/model.jpg"], "category": "Jackets",
+  "offers": [{"@type": "Offer", "price": "79.00", "priceCurrency": "USD"}]}]}</script></head></html>"""
+
+
+def test_page_product_info_and_clean_name():
+    from app.suggest import clean_product_name, page_product_info
+    info = page_product_info(WRANGLER)
+    assert info["price"] == 79.0 and info["brand"] == "Wrangler" and "Jackets" in info["types"]
+    assert info["images"][0] == "https://www.wrangler.com/img/flat.jpg"
+    p = {"brand": "Wrangler", "retailer": "Wrangler"}
+    assert clean_product_name(info["name"], p) == "Blanket Lined Denim Jacket"
+    assert clean_product_name("Wrangler\u00ae Blanket Lined Denim Jacket | COLLECTIONS | Wrangler\u00ae", p) == \
+        "Blanket Lined Denim Jacket"
+    assert clean_product_name("Men's Premier Low Top In White Leather - Thursday Boot Company",
+                              {"retailer": "Thursday Boot Co."}) == "Men's Premier Low Top In White Leather"
+    assert page_product_info("") == {}
+    meta_only = '<meta property="og:title" content="Chino Pant"><meta property="product:price:amount" content="45.00">'
+    assert page_product_info(meta_only)["price"] == 45.0
+
+
+# ------------------------------------------------------------------ store blocklist: no J.Crew, ever
+@pytest.mark.parametrize("p", [
+    {"name": "Wallace & Barnes Chore Jacket", "brand": "Wallace & Barnes", "retailer": "J.Crew",
+     "product_url": "https://www.jcrew.com/p/mens/categories/clothing/BH123"},
+    {"name": "Broken-in Chino", "brand": "Other", "retailer": "Other", "product_url": "https://factory.jcrew.com/p/x"},
+    {"name": "Slim Oxford Shirt", "brand": "J.Crew Factory", "retailer": "Nordstrom",
+     "product_url": "https://www.nordstrom.com/s/oxford/1"},
+    {"name": "Crewneck Sweater", "brand": "J. Crew", "retailer": "Macy's", "product_url": "https://www.macys.com/p/1"},
+    {"name": "J.Crew Classic Rain Jacket", "brand": None, "retailer": "Poshmark", "product_url": "https://poshmark.com/l/1"},
+    {"name": "Chino", "brand": "X", "retailer": "X", "product_url": "https://x.com/p/1",
+     "image_url": "https://www.jcrew.com/s7-img-facade/BH123.jpg"},
+])
+def test_blocked_store_is_dropped(p):
+    from app.suggest import blocked_store, drop_blocked
+    assert blocked_store(p), p
+    rej = []
+    assert drop_blocked([p], rej) == [] and "blocked store" in rej[0]["reason"]
+
+
+def test_blocklist_keeps_other_stores_and_crewnecks():
+    from app.suggest import blocked_host, blocked_store, blocked_stores_prompt, stores
+    for p in ({"name": "Crewneck Sweatshirt", "brand": "Gap", "retailer": "Gap", "product_url": "https://www.gap.com/p/1"},
+              {"name": "Crew Socks-free Loafer", "brand": "Crew Clothing", "retailer": "Crew Clothing",
+               "product_url": "https://www.crewclothing.co.uk/p/1"},
+              {"name": "Chino", "brand": "Madewell", "retailer": "Madewell", "product_url": "https://notjcrew.com/p/1"}):
+        assert blocked_store(p) is None, p
+    assert blocked_host("https://jcrew.com/p/1") == "jcrew.com" and blocked_host("https://factory.jcrew.com/") == "jcrew.com"
+    assert not any(blocked_host("https://" + d) for d, _, _ in stores())
+    assert "J.Crew" in blocked_stores_prompt() and "J.Crew Factory" in blocked_stores_prompt()
+
+
+def test_search_prompts_tell_gemini_no_jcrew():
+    from app import suggest, wardrobe_suggest as ws
+    summary = {"size": 1, "categories": {"top": {"count": 1, "colors": ["black"], "types": ["t-shirt"]}}}
+    cand = {"category": "top", "attributes": {"subcategory": "t-shirt", "primary_color": "black"}}
+    for mode in ("alternatives", "pairings"):
+        pr = suggest.build_prompt(cand, mode, summary, {"verdict": {"decision": "SKIP", "reasons": []}})
+        assert "NEVER suggest products from J.Crew" in pr and "Old Navy, J.Crew" not in pr
+        assert "J.Crew" in suggest.build_plan_prompt(cand, mode, summary, {"verdict": {"decision": "SKIP", "reasons": []}})
+    closet = [{"category": "top", "attributes": {"primary_color": "black", "subcategory": "t-shirt"}}]
+    for grounded in (True, False):
+        assert "NEVER suggest products from J.Crew" in ws.build_prompt(closet, summary, "mens", grounded=grounded)
+
+
+def test_fetch_product_skips_a_jcrew_page_for_a_non_jcrew_product(monkeypatch):
+    from app import suggest
+    pages = {"https://redirect/jc": (200, "https://www.jcrew.com/p/trucker-jacket/BH1", "text/html",
+                                     page("Levi's Trucker Jacket | J.Crew").encode())}
+    monkeypatch.setattr(suggest, "_get", lambda c, u, accept, mx: pages.get(u, (None, u, None, b"")))
+    suggest._page_cache.clear()
+    monkeypatch.setattr(suggest, "grounding_urls_for", lambda p, g: ["https://redirect/jc"])
+    out = suggest.fetch_product({**JACKET, "product_url": None}, {})
+    assert out["product_url"] is None and "blocked store" in out["fetch_error"]
+
+
+def test_card_color_follows_the_page_and_photo_not_gemini():
+    """The Old Navy bomber bug: Gemini said olive, the linked variant / photo is black."""
+    from PIL import Image
+    from app import suggest
+    black = Image.new("RGB", (200, 200), "white")
+    black.paste(Image.new("RGB", (120, 140), (20, 20, 22)), (40, 30))
+    p = {"color": "olive", "product_url": "https://oldnavy.gap.com/browse/product.do?pid=1"}
+    suggest.verify_color(p, {"name": "Water-Resistant Zip Bomber Jacket for Men"}, black)
+    assert p["color"] == "black" and p["color_verified"] and p["gemini_color"] == "olive"
+    p = {"color": "olive", "product_url": "https://x.com/p/1?color=navy"}
+    suggest.verify_color(p, {}, None)
+    assert p["color"] == "navy" and p["color_verified"]
+    p = {"color": "olive", "product_url": "https://x.com/p/1"}
+    suggest.verify_color(p, {"color": "Olive Night"}, None)
+    assert p["color"] == "olive" and p["color_verified"]
+    p = {"color": "olive", "product_url": "https://x.com/p/1"}
+    suggest.verify_color(p, {}, None)
+    assert p["color_verified"] is False
+    assert suggest.first_color("Sail/Gum Yellow/Varsity Royal") == "cream"
+    assert suggest.first_color("Black/White") == "black" and suggest.first_color("Beech") is None
+    assert suggest.page_product_info('<script type="application/ld+json">{"@type": "Product", "name": "Bomber", '
+                                     '"color": "Black"}</script>')["color"] == "Black"

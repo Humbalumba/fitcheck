@@ -1,5 +1,6 @@
 """Canonical TEMPLATE renderer (app/render_template.py + app/garment_templates.py) and the attribute-driven
 Gemini prompt (app/render_prompt.py). No Gemini calls: garment details are passed in explicitly."""
+import os
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
@@ -67,7 +68,12 @@ def test_unsupported_or_risky_items_fall_back(item, details):
 
 
 def test_all_templates_build_and_have_anchors():
-    for name in gt.TEMPLATE_NAMES:
+    # building every template from scratch is ~75 s of CPU: the default run checks a representative subset
+    # (tee / jeans / first + last); FITCHECK_SLOW_TESTS=1 checks all of them.
+    names = list(gt.TEMPLATE_NAMES)
+    if os.environ.get("FITCHECK_SLOW_TESTS") != "1":
+        names = list(dict.fromkeys([n for n in ("tshirt", "jeans") if n in names] + names[:1] + names[-1:]))
+    for name in names:
         for view in ("front", "back"):
             t = gt.get_template(name, view)
             assert t.mask.shape == (gt.S, gt.S) and 0.12 < float((t.mask > 0.5).mean()) < 0.7, name

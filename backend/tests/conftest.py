@@ -32,6 +32,11 @@ os.environ["FITCHECK_DATA_DIR"] = str(SRC)  # media paths of the seeded items li
 os.environ["FITCHECK_DB"] = str(_tmp / "fitcheck.db")
 os.environ["FITCHECK_FAISS"] = str(_tmp / "closet.faiss")
 os.environ.setdefault("FITCHECK_PRICE_BACKFILL", "0")  # no startup backfill thread racing the tests (tested directly)
+# same local model cache as run.sh, and never reach out to the Hugging Face hub from tests (offline + fast)
+os.environ.setdefault("HF_HOME", str(BACKEND / "models" / "hf"))
+if (Path(os.environ["HF_HOME"]) / "hub").exists():
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 if os.environ.get("FITCHECK_TEST_GEMINI") != "1":
     os.environ["FITCHECK_GEMINI_OFF"] = "1"
 

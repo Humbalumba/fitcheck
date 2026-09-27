@@ -33,7 +33,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 import numpy as np
 from PIL import Image
@@ -160,8 +160,9 @@ def build_prompt(cand: dict, mode: str, summary: dict, cand_eval: dict) -> str:
     lines += [
         "Clothes and shoes only: NEVER suggest accessories (bags, jewellery, watches, hats, caps, belts, scarves, "
         "sunglasses, gloves, ties, socks).",
+        blocked_stores_prompt(),
         "RULES: each product must be one specific, currently listed product on a retailer or brand website "
-        "(e.g. Uniqlo, Gap, Old Navy, J.Crew, Madewell, Everlane, H&M, Zara, Mango, Abercrombie, Levi's, Nordstrom, "
+        "(e.g. Uniqlo, Gap, Old Navy, Madewell, Everlane, H&M, Zara, Mango, Abercrombie, Levi's, Nordstrom, "
         "Target, Macy's, ASOS). Use the product page URL exactly as found in your search results, never an invented "
         "or guessed URL. image_url = a direct product image URL only if you saw one, else null. price = the current "
         "USD price as a number.",
@@ -426,6 +427,80 @@ def is_non_shopping_url(url: str | None) -> bool:
     return bool(_NON_SHOP_PATH_RE.search(path))
 
 
+# ------------------------------------------------------------------ store blocklist (user: "no more suggestions from jcrew")
+# One place to extend: store domain (any subdomain counts, e.g. factory.jcrew.com) -> brand / seller names.
+BLOCKED_STORES: dict[str, tuple[str, ...]] = {
+    "jcrew.com": ("J.Crew", "J.Crew Factory"),
+}
+
+
+def _store_key(s: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def blocked_host(url: str | None) -> str | None:
+    """Blocked store domain this URL belongs to (itself or any subdomain), else None."""
+    h = _host(url).lower()
+    return next((d for d in BLOCKED_STORES if h == d or h.endswith("." + d)), None) if h else None
+
+
+def _blocked_name(text: str | None) -> str | None:
+    k = _store_key(text)
+    if not k:
+        return None
+    for names in BLOCKED_STORES.values():
+        for n in names:
+            nk = _store_key(n)
+            if k == nk or k.startswith(nk):  # 'J.Crew', 'J. Crew Factory', 'JCrew Mercantile'
+                return n
+    return None
+
+
+def _name_mentions_blocked(name: str | None) -> str | None:
+    for names in BLOCKED_STORES.values():
+        for n in names:
+            pat = r"(?<![a-z0-9])" + r"\.?\s*".join(re.escape(ch) for ch in _store_key(n)) + r"(?![a-z0-9])"
+            if re.search(pat, (name or "").lower()):
+                return n
+    return None
+
+
+def blocked_store(p: dict) -> str | None:
+    """Why this product is from a blocked store (URL / image host, brand, retailer, the validated page's brand, or
+    the product name itself), else None."""
+    for k in ("product_url", "image_url", "image_source_url"):
+        d = blocked_host(p.get(k))
+        if d:
+            return f"blocked store ({d})"
+    for v in (p.get("brand"), p.get("retailer"), (p.get("page") or {}).get("brand"),
+              ((p.get("item") or {}).get("attributes") or {}).get("brand"),
+              ((p.get("item") or {}).get("attributes") or {}).get("retailer")):
+        n = _blocked_name(v)
+        if n:
+            return f"blocked store ({n})"
+    n = _name_mentions_blocked(p.get("name")) or _name_mentions_blocked(p.get("listing_name"))
+    return f"blocked store ({n})" if n else None
+
+
+def drop_blocked(products: list[dict], rejected: list[dict] | None = None) -> list[dict]:
+    keep = []
+    for p in products:
+        why = blocked_store(p)
+        if why:
+            if rejected is not None:
+                rejected.append({"name": p.get("name"), "retailer": p.get("retailer"), "reason": why})
+        else:
+            keep.append(p)
+    return keep
+
+
+def blocked_stores_prompt() -> str:
+    names = sorted({n for ns in BLOCKED_STORES.values() for n in ns})
+    doms = ", ".join(BLOCKED_STORES)
+    return (f"NEVER suggest products from {' or '.join(names)} (the shopper asked for no more suggestions from them): "
+            f"no {doms} links (including subdomains) and no products of those brands.")
+
+
 def is_bad_landing(url: str | None) -> bool:
     """Search / 'no results' / error / home page instead of a product page."""
     if not url:
@@ -503,6 +578,178 @@ def check_link(p: dict, url: str, status: int | None, html_text: str) -> tuple[b
     return text_matches_product(p, urlparse(url).path)
 
 
+# ------------------------------------------------------------------ what the validated product page itself says
+def _jsonld_objects(html_text: str):
+    for m in re.finditer(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html_text[:1_500_000], re.S | re.I):
+        try:
+            d = json.loads(m.group(1).strip())
+        except Exception:
+            continue
+        stack = [d]
+        while stack:
+            o = stack.pop()
+            if isinstance(o, list):
+                stack += o
+            elif isinstance(o, dict):
+                yield o
+                for k in ("@graph", "hasVariant", "mainEntity", "itemListElement"):
+                    if isinstance(o.get(k), (list, dict)):
+                        stack.append(o[k])
+
+
+def _is_product(o: dict) -> bool:
+    t = o.get("@type")
+    return t in ("Product", "ProductGroup", "IndividualProduct") or (isinstance(t, list) and "Product" in t)
+
+
+def _meta(html_text: str, *names: str) -> str | None:
+    for n in names:
+        for pat in (rf'<meta[^>]+(?:property|name|itemprop)=["\']{re.escape(n)}["\'][^>]*content=["\']([^"\']+)',
+                    rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name|itemprop)=["\']{re.escape(n)}["\']'):
+            m = re.search(pat, html_text[:600_000], re.I)
+            if m:
+                return _html.unescape(m.group(1)).strip()
+    return None
+
+
+def _img_list(v) -> list[str]:
+    out = []
+    for x in (v if isinstance(v, list) else [v]):
+        u = x.get("url") or x.get("contentUrl") if isinstance(x, dict) else x
+        if isinstance(u, str) and u.strip():
+            u = u.strip()
+            out.append("https:" + u if u.startswith("//") else u)
+    return out
+
+
+def page_product_info(html_text: str) -> dict:
+    """Name / brand / price / images / garment-type words from the product page (JSON-LD Product first, then
+    og:/product: meta tags). Empty dict when the page isn't readable."""
+    if not html_text:
+        return {}
+    info: dict = {"images": [], "types": []}
+    for o in _jsonld_objects(html_text):
+        if not _is_product(o):
+            continue
+        info.setdefault("name", _html.unescape(str(o.get("name") or "")).strip() or None)
+        b = o.get("brand")
+        b = b.get("name") if isinstance(b, dict) else (b[0].get("name") if isinstance(b, list) and b and isinstance(b[0], dict) else b)
+        if isinstance(b, str) and b.strip():
+            info.setdefault("brand", b.strip())
+        offers = o.get("offers")
+        for off in (offers if isinstance(offers, list) else [offers]):
+            if isinstance(off, dict) and "price" not in info:
+                spec = off.get("priceSpecification")
+                pr = _to_price(off.get("price") or off.get("lowPrice") or (spec.get("price") if isinstance(spec, dict) else None))
+                cur = (off.get("priceCurrency") or "USD").upper()
+                if pr and cur == "USD":
+                    info["price"] = pr
+        info["images"] += [u for u in _img_list(o.get("image")) if u not in info["images"]]
+        for k in ("category", "productType", "additionalType"):
+            if isinstance(o.get(k), str):
+                info["types"].append(o[k])
+        if isinstance(o.get("color"), str) and o["color"].strip():
+            info.setdefault("color", o["color"].strip())
+    if not info.get("name"):
+        info["name"] = _meta(html_text, "og:title", "twitter:title")
+    if "price" not in info:
+        pr = _to_price(_meta(html_text, "product:price:amount", "og:price:amount", "price"))
+        cur = (_meta(html_text, "product:price:currency", "og:price:currency", "priceCurrency") or "USD").upper()
+        if pr and cur == "USD":
+            info["price"] = pr
+    if not info.get("color"):
+        info["color"] = _meta(html_text, "product:color", "og:color", "color")
+    info["types"] += re.findall(r'"(?:product_type|productType|product_category)"\s*:\s*"([^"]{2,40})"', html_text[:1_500_000])[:3]
+    info["name"] = info.get("name") or None
+    return info
+
+
+_NAME_SEP = re.compile(r"\s+[|\u2013\u2014-]\s+|\s*\|\s*")
+
+
+def clean_product_name(name: str, p: dict) -> str:
+    """'Wrangler® Blanket Lined Denim Jacket | COLLECTIONS | Wrangler®' -> 'Blanket Lined Denim Jacket'."""
+    name = re.sub(r"[\u00ae\u2122]", "", _html.unescape(name or "")).strip()
+    store = {t for t in (_tokens(p.get("retailer") or "") | _tokens(p.get("brand") or "")) if len(t) >= 3}
+    parts = [x.strip() for x in _NAME_SEP.split(name) if x.strip()]
+    generic = re.compile(r"^(collections?|shop|official site|online|men'?s?|women'?s?|new arrivals|sale|us|usa)$", re.I)
+    keep = [x for x in parts if not generic.match(x) and not (_tokens(x) and _tokens(x) <= store | _STOP)]
+    out = keep[0] if keep else (parts[0] if parts else name)
+    for b in sorted([p.get("brand") or "", p.get("retailer") or ""], key=len, reverse=True):
+        if b and out.lower().startswith(b.lower() + " ") and len(out) > len(b) + 3:
+            out = out[len(b):].strip(" -:")
+    return out[:120]
+
+
+def url_variant_color(url: str | None) -> str | None:
+    """Color of the variant the link selects (?color=olive, ?colour=..., /olive-green/ path bits)."""
+    try:
+        u = urlparse(url or "")
+    except ValueError:
+        return None
+    for k, v in parse_qsl(u.query):
+        if k.lower() in ("color", "colour", "colorname", "color_name", "variantcolor", "dwvar_color") and v:
+            c = product_color(v.lower().replace("-", " ").replace("_", " "))
+            if c:
+                return c
+    return None
+
+
+def image_color(img) -> str | None:
+    """Very coarse color of a product-only photo's garment (pixels that aren't background white): only the
+    unambiguous cases -- 'black' (very dark), 'white' (very light) -- else None."""
+    try:
+        a = np.asarray(img.convert("RGB").resize((96, 96)), dtype=np.float32)
+    except Exception:
+        return None
+    px = a.reshape(-1, 3)
+    fg = px[(px.min(axis=1) < 235)]
+    if len(fg) < 200:
+        return None
+    lum = (0.299 * fg[:, 0] + 0.587 * fg[:, 1] + 0.114 * fg[:, 2])
+    sat = fg.max(axis=1) - fg.min(axis=1)
+    med_l, med_s = float(np.median(lum)), float(np.median(sat))
+    if med_l < 55 and med_s < 30:
+        return "black"
+    return None
+
+
+DARK_COLORS = {"black", "navy", "grey", "brown", "burgundy"}
+_VARIANT_EXTRA = {"sail": "cream", "off white": "cream", "off-white": "cream", "summit white": "white"}
+
+
+def first_color(text: str | None) -> str | None:
+    """Main color of a variant name: the FIRST color word ('Sail/Gum Yellow' -> cream, 'Black/White' -> black)."""
+    t = (text or "").lower()
+    words = {**COLOR_WORDS, **_VARIANT_EXTRA}
+    best = None
+    for w in sorted(words, key=len, reverse=True):
+        m = re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", t)
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), words[w])
+    return best[1] if best else None
+
+
+def verify_color(p: dict, info: dict, img) -> None:
+    """The card's color must be the variant actually shown/linked: page variant color (JSON-LD / meta), then the
+    link's ?color=, then a color word in the page's product name. Gemini's color is replaced when the page says
+    otherwise, and dropped (unverified) when the photo clearly contradicts it (olive claimed, black jacket shown)."""
+    claimed = (p.get("color") or "").lower() or None
+    page_c = (first_color(info.get("color")) or url_variant_color(p.get("product_url"))
+              or first_color(info.get("name")))
+    img_c = image_color(img) if img is not None else None
+    if page_c and not (img_c == "black" and page_c not in DARK_COLORS):
+        p["color"], p["color_verified"] = page_c, True
+    elif img_c == "black" and claimed not in DARK_COLORS:
+        p["gemini_color"], p["color"], p["color_verified"] = claimed, "black", True
+    elif img_c and claimed == img_c:
+        p["color_verified"] = True
+    else:
+        p["color_verified"] = False
+    if claimed and p["color"] != claimed:
+        p["gemini_color"] = claimed
+
+
 _page_cache: dict[str, tuple[float, tuple]] = {}
 PAGE_CACHE_TTL_S = 1800
 
@@ -540,6 +787,8 @@ def fetch_product(p: dict, grounded: dict) -> dict:
                 continue
             h = body.decode("utf-8", "ignore") if ct and "html" in ct else ""
             ok, why = check_link(p, final, st, h)
+            if ok and blocked_host(final):
+                ok, why = False, f"blocked store ({blocked_host(final)})"
             if not ok:
                 link_rejects.append(f"{_host(final)}: {why}")
                 continue
@@ -554,11 +803,24 @@ def fetch_product(p: dict, grounded: dict) -> dict:
             p["fetch_s"] = round(time.time() - t0, 2)
             return p
         p["product_url"] = page_url or p.get("product_url")
+        info = page_product_info(page_html)
+        p["page"] = {k: v for k, v in info.items() if k != "images"}
+        if info.get("name"):  # the card shows what the page sells, not Gemini's wording
+            p["listing_name"], p["name"] = p["name"], clean_product_name(info["name"], p)
+        if info.get("brand") and not p.get("brand"):
+            p["brand"] = info["brand"]
+        if info.get("price"):
+            gp = p.get("price")
+            p["listing_price"], p["price"] = gp, info["price"]
+            if gp and not (1 / 1.8 <= info["price"] / gp <= 1.8):
+                p["price_mismatch"] = f"price on the page (${info['price']:.0f}) doesn't match the listing (${gp:.0f})"
         p["link_status"] = status
         p["link_ok"] = True if status == 200 else (None if status in (401, 403, 429, 503) else False)
         p["product_page"] = _looks_like_product_page(page_html) if page_html else None
         img = None
-        img_urls = _page_images(page_html, page_url or "") + ([p["image_url"]] if p.get("image_url") else [])
+        img_urls = [urljoin(page_url or "", u) for u in info.get("images") or []]
+        img_urls += [u for u in _page_images(page_html, page_url or "") + ([p["image_url"]] if p.get("image_url") else [])
+                     if u not in img_urls]
         img_urls = [u for u in img_urls if not is_non_shopping_url(u) or "cdn" in _host(u)]
         if p.get("shopify_js"):
             cat = p.get("_category") or p.get("category") or "top"
@@ -569,19 +831,44 @@ def fetch_product(p: dict, grounded: dict) -> dict:
             elif better is not None:
                 img, p["image_source_url"], p["photo_kind"] = better
                 img_urls = []
-        for u in img_urls[:5]:
+        # prefer a product-only photo (no person: flat lay / ghost mannequin / white-background shot)
+        fallback = None
+        cat = p.get("_category") or normalize_category(p) or "top"
+        for u in img_urls[:6]:
             st, final, ct, body = _get(c, u, IMG_ACCEPT, MAX_IMAGE_BYTES)
-            if st == 200:
-                img = _decode_image(ct, body)
-                if img is not None:
-                    p["image_source_url"] = final
-                    break
+            if st != 200:
+                continue
+            cand = _decode_image(ct, body)
+            if cand is None:
+                continue
+            try:
+                ps = photo_stats(cand, cat)
+                product_only = ps["person"] < 0.02 and ps["garment"] >= 0.03
+            except Exception:
+                product_only = False
+            if product_only:
+                img, p["image_source_url"], p["photo_kind"] = cand, final, "product_only"
+                break
+            if fallback is None:
+                fallback = (cand, final)
+        if img is None and fallback is not None:
+            img, p["image_source_url"] = fallback
+            p["photo_kind"] = p.get("photo_kind") or "on_model"
     p["image"] = img
+    try:
+        verify_color(p, info if p.get("product_url") else {}, img)
+    except Exception:
+        log.exception("color check failed for %s", p.get("name"))
+        p["color_verified"] = False
     if img is None:
         p["fetch_error"] = ("no clean product photo (only lifestyle / worn shots)" if p.get("photo_kind") == "none"
                             else "no product photo could be fetched")
     elif p["link_ok"] is False:
         p["fetch_error"] = f"product link broken (HTTP {status})"
+    elif p.get("price_mismatch"):
+        p["fetch_error"] = p["price_mismatch"]
+    if not p.get("fetch_error") and blocked_store(p):
+        p["fetch_error"] = blocked_store(p)
     p["fetch_s"] = round(time.time() - t0, 2)
     return p
 
@@ -1007,6 +1294,7 @@ def compute(eid: str, fetcher=None) -> dict:
     products, rejected, meta = find_products(eid, mode, cand, summary, res)
     grounded = meta.pop("grounded", None) or {"text": "", "chunks": [], "supports": []}
     t_gemini = time.time()
+    products = drop_blocked(products, rejected)
     valid = []
     cg = (cand.get("attributes") or {}).get("gender_presentation")
     for p in products:
@@ -1073,7 +1361,8 @@ def delete_suggestion_items_by_id(it: dict) -> None:
 def drop_accessories(result: dict) -> dict:
     """Cached suggestions saved before accessories were removed: never show an accessory product."""
     sugs = result.get("suggestions") or []
-    keep = [s for s in sugs if not is_accessory_item({**s, "attributes": (s.get("item") or {}).get("attributes")})]
+    keep = [s for s in sugs if not is_accessory_item({**s, "attributes": (s.get("item") or {}).get("attributes")})
+            and not blocked_store(s)]
     return result if len(keep) == len(sugs) else {**result, "suggestions": keep}
 
 
@@ -1136,8 +1425,8 @@ def stores() -> list[tuple[str, str, str]]:
             bits = [b.strip() for b in part.split("|")]
             if bits and bits[0]:
                 out.append((bits[0], bits[1] if len(bits) > 1 else bits[0], bits[2] if len(bits) > 2 else "wm"))
-        return out
-    return DEFAULT_STORES
+        return [x for x in out if not blocked_host("https://" + x[0]) and not _blocked_name(x[1])]
+    return [x for x in DEFAULT_STORES if not blocked_host("https://" + x[0])]
 
 
 def _plan_schema():
@@ -1248,18 +1537,33 @@ def _gender_of(text: str) -> str | None:
     return "womens" if w and not m else "mens" if m and not w else None
 
 
+_store_sems: dict[str, threading.Semaphore] = collections.defaultdict(lambda: threading.Semaphore(2))
+_store_cache: dict[tuple[str, str, int], tuple[float, list]] = {}
+
+
 def search_store(domain: str, query: str, limit: int = 8) -> list[dict]:
+    """Public Shopify predictive search. Gentle on the storefronts (they rate-limit bursts with 429): at most 2
+    requests per store at a time, one retry after a 429, and results cached for 30 min."""
     from urllib.parse import quote
+    key = (domain, query.lower().strip(), limit)
+    hit = _store_cache.get(key)
+    if hit and time.time() - hit[0] < PAGE_CACHE_TTL_S:
+        return hit[1]
     url = (f"https://{domain}/search/suggest.json?q={quote(query)}&resources%5Btype%5D=product"
            f"&resources%5Blimit%5D={limit}")
-    with _client() as c:
+    with _store_sems[domain], _client() as c:
         st, final, ct, body = _get(c, url, "application/json", 2_000_000)
+        if st == 429:
+            time.sleep(2.0)
+            st, final, ct, body = _get(c, url, "application/json", 2_000_000)
     if st != 200 or not body:
         return []
     try:
-        return json.loads(body)["resources"]["results"]["products"] or []
+        res = json.loads(body)["resources"]["results"]["products"] or []
     except Exception:
         return []
+    _store_cache[key] = (time.time(), res)
+    return res
 
 
 def _score_hit(h: dict, q: dict, cand_gender: str | None, price_range: tuple[float, float],

@@ -36,7 +36,7 @@ log = logging.getLogger("fitcheck.wardrobe_suggest")
 
 MAX_RETURNED = 5
 MIN_WANTED = 3
-ASK_N = 9                 # products asked from Gemini (some drop out: no photo, broken link, duplicate, no outfits)
+ASK_N = 12                # products asked from Gemini (some drop out: no photo, broken link, duplicate, no outfits)
 MAX_PER_CATEGORY = 2
 EID_PREFIX = "wardrobe_"  # suggestion_for tag of the items this module creates
 ERROR_RETRY_S = 90        # a failed search is retried by the next request after this long
@@ -165,11 +165,12 @@ def build_prompt(closet: list[dict], summary: dict, gender: str, grounded: bool 
         "Keep them affordable (mostly $20-$120).",
         "Clothes and shoes only: NEVER suggest accessories (bags, jewellery, watches, hats, caps, belts, scarves, "
         "sunglasses, gloves, ties, socks).",
+        suggest.blocked_stores_prompt(),
     ]
     if grounded:
         lines += [
             "RULES: each product must be one specific, currently listed product on a retailer or brand website "
-            "(e.g. Uniqlo, Gap, Old Navy, J.Crew, Madewell, Everlane, H&M, Zara, Abercrombie, Levi's, Nordstrom, "
+            "(e.g. Uniqlo, Gap, Old Navy, Madewell, Everlane, H&M, Zara, Abercrombie, Levi's, Nordstrom, "
             "Target, Macy's, ASOS, Nike, Adidas, Vans, Converse). Use the product page URL exactly as found in your "
             "search results, never an invented or guessed URL. image_url = a direct product image URL only if you "
             "saw one, else null. price = the current USD price as a number.",
@@ -203,7 +204,8 @@ def _whys(text: str) -> dict[str, str]:
     return out
 
 
-def find_products(eid: str, closet: list[dict], summary: dict, gender: str) -> tuple[list[dict], list[dict], dict]:
+def find_products(eid: str, closet: list[dict], summary: dict, gender: str, extra: str = "",
+                  store_fallback: bool = True) -> tuple[list[dict], list[dict], dict]:
     """-> (products, rejected, meta). One Gemini request (grounded search, else plan + live store search)."""
     fx = os.environ.get("FITCHECK_SUGGEST_FIXTURE_DIR")
     if fx and (Path(fx) / "wardrobe.products.json").exists():  # offline replay (tests)
@@ -215,7 +217,7 @@ def find_products(eid: str, closet: list[dict], summary: dict, gender: str) -> t
         if os.environ.get("SUGGEST_GROUNDING", "auto").lower() == "off":
             raise gemini.GroundingUnavailable("grounding disabled (SUGGEST_GROUNDING=off)")
         t0 = time.time()
-        prompt = build_prompt(closet, summary, gender, grounded=True)
+        prompt = build_prompt(closet, summary, gender, grounded=True) + (("\n" + extra) if extra else "")
         g = gemini.generate_grounded(prompt)
         g.update(kind="grounded", latency_s=round(time.time() - t0, 2), prompt=prompt, mode="wardrobe")
         suggest._record(eid, g)
@@ -227,6 +229,8 @@ def find_products(eid: str, closet: list[dict], summary: dict, gender: str) -> t
                               "latency_s": g["latency_s"], "grounded": g}
     except gemini.GroundingUnavailable as e:
         log.info("wardrobe suggestions: %s -> Gemini-planned store search", e)
+        if not store_fallback:
+            return [], [], {"source": "none", "latency_s": 0.0}
     return store_products(eid, closet, summary, gender)
 
 
@@ -295,9 +299,11 @@ def rank(scored: list[tuple[dict, dict, dict]], settings: dict) -> tuple[list, l
     keep.sort(key=lambda x: (x[2]["n"], x[2]["value"].get("value_score") or 0, x[2]["best_outfit"] or 0),
               reverse=True)
     top, per_cat = [], collections.Counter()
-    for limit in (1, MAX_PER_CATEGORY):
+    for limit in (1, MAX_PER_CATEGORY, MAX_RETURNED):
+        if limit == MAX_RETURNED and len(top) >= MIN_WANTED:
+            break  # variety cap is only relaxed when it would leave fewer than MIN_WANTED picks
         for x in keep:
-            if len(top) >= MAX_RETURNED:
+            if len(top) >= MAX_RETURNED or (limit == MAX_RETURNED and len(top) >= MIN_WANTED):
                 break
             if x not in top and per_cat[x[1]["category"]] < limit:
                 top.append(x)
@@ -327,6 +333,20 @@ def plain_reason(p: dict, cat: str, summary: dict) -> str:
     return "Works with a lot of what you own"
 
 
+CATEGORY_NOUN = {"top": "top", "bottom": "pair of pants", "outerwear": "layer", "shoes": "pair of shoes", "dress": "dress"}
+
+
+def sanitize_reason(reason: str, cat: str, verified_color: str | None = None) -> str:
+    """Gemini's 'why' may name a color the store's actual variant doesn't have ('Olive adds...' on a black bomber):
+    a color claim stays only when it's the color verified on the product page / photo (suggest.verify_color)."""
+    if reason in GAP_PHRASES.values():
+        return reason
+    said = suggest.product_color((reason or "").lower())
+    if said and said != (verified_color or "").lower():
+        return f"A new {CATEGORY_NOUN.get(cat, 'piece')} to mix with your clothes"
+    return reason
+
+
 def pairs_line(s: dict) -> str:
     return f"Goes with {_plural(s['pieces'], 'piece')} you own"
 
@@ -350,10 +370,15 @@ def to_api(p: dict, it: dict, s: dict, summary: dict) -> dict:
         "retailer": p.get("retailer") or suggest._host(p.get("product_url")), "price": p.get("price"),
         "currency": "USD", "product_url": p.get("product_url"), "link_status": p.get("link_status"),
         "link_ok": p.get("link_ok"), "image_url": api_it["image_url"],
-        "photo_url": config.media_url(it.get("crop_path")), "source_image_url": p.get("image_source_url"),
+        "photo_url": api_it["image_url"] if (it.get("attributes") or {}).get("segmentation") == "white_bg"
+        else config.media_url(it.get("crop_path")), "source_image_url": p.get("image_source_url"),
+        "listing_name": p.get("listing_name"),
         "category": it["category"], "subcategory": (it.get("attributes") or {}).get("subcategory"),
         "color": (it.get("attributes") or {}).get("primary_color"),
-        "reason": plain_reason(p, it["category"], summary), "pairs_line": pairs_line(s),
+        "reason": sanitize_reason(plain_reason(p, it["category"], summary), it["category"],
+                                  p.get("color") if p.get("color_verified") else None),
+        "color_verified": bool(p.get("color_verified")), "gemini_color": p.get("gemini_color"),
+        "pairs_line": pairs_line(s),
         "details": details_line(s), "gemini_why": p.get("why"),
         "total_new_outfits": s["n"], "pieces_it_goes_with": s["pieces"],
         "value": {k: s["value"].get(k) for k in ("value_score", "cost_per_wear", "price", "expected_wears")},
@@ -402,10 +427,71 @@ def shoes_photo_shows_outfit(img) -> bool:
     return other > 0.15 and other > 2.5 * shoes
 
 
+TRUSTED_IMAGE_CDNS = ("cdn.shopify.com", "scene7.com", "akamaized.net", "cloudinary.com", "imgix.net",
+                      "demandware.static", "salsify.com", "cdn-images", "images.", "static.", "media.")
+
+
+def _trusted_image(url: str | None, p: dict) -> bool:
+    h = suggest._host(url).lower()
+    return bool(h) and (host_matches_store(url, p) or any(c in h for c in TRUSTED_IMAGE_CDNS))
+
+
+def image_names_product(p: dict) -> bool:
+    """Bot-walled page: the photo URL must itself name the product (title words) or carry the product code from the
+    page URL (e.g. .../stan-smith-shoes/M20324.html -> ..._M20324_01_standard.jpg). A bare numeric image id from a
+    CDN (which is how a dead / different product slips in) isn't enough."""
+    img = (p.get("image_source_url") or "").lower()
+    img_toks = set(re.findall(r"[a-z0-9]+", img.replace("_", " ")))
+    if suggest._name_tokens(p) & img_toks:
+        return True
+    path = suggest.urlparse(p.get("product_url") or "").path.lower()
+    codes = {c for c in re.findall(r"[a-z0-9]+", path) if len(c) >= 5 and re.search(r"\d", c) and re.search(r"[a-z]", c)}
+    return any(c in img for c in codes)
+
+
+def vet(p: dict) -> str | None:
+    """Strict checks for a 'Worth a look' entry (after the shared link validation in suggest.fetch_product).
+    Returns the rejection reason, or None if the entry is solid:
+     - readable page: it must be a real product page with its own product name AND price (what the card shows);
+     - bot-walled page (403 etc.): the URL must name the product (checked upstream) and the photo must come from
+       the store's own domain / a known image CDN;
+     - the photo must be product-only (no person: isolated garment), so the cutout can be shown and scored;
+     - the garment type the page names must be the suggested category."""
+    cat = p.get("_category")
+    page = p.get("page") or {}
+    if p.get("link_ok") is True:
+        if not p.get("product_page"):
+            return "page isn't a product page (no product data / add to cart)"
+        if not page.get("name"):
+            return "page doesn't name the product"
+        if not page.get("price"):
+            return "page shows no price"
+    elif p.get("link_ok") is None:
+        if not _trusted_image(p.get("image_source_url"), p):
+            return "store page blocks readers and the photo isn't from the store"
+        if not image_names_product(p):
+            return "store page blocks readers and the photo can't be tied to this product"
+    else:
+        return "product link broken"
+    if p.get("photo_kind") != "product_only":
+        return "only on-model / lifestyle photos (no photo of the item alone)"
+    text = " ".join([p.get("name") or "", " ".join(page.get("types") or []),
+                     suggest.urlparse(p.get("product_url") or "").path.replace("-", " ").replace("_", " ")]).lower()
+    kind = suggest.guess_category_from_label(text)
+    if kind != cat:
+        return (f"page is for {kind}, not {cat}" if kind else f"page doesn't say it's {CATEGORY_WORDS.get(cat, cat)}")
+    return None
+
+
+def _varied(top) -> int:
+    """Picks that count toward 'enough' (at most MAX_PER_CATEGORY per category): 3 shoes still asks for more."""
+    return sum(min(n, MAX_PER_CATEGORY) for n in collections.Counter(it["category"] for _, it, _ in top).values())
+
+
 def _process(products, grounded, closet, settings, gender, eid, pseudo, rejected, seen, fetcher=None):
     """Filter -> fetch photo + verify link -> cutout item -> score. Returns [(product, item, score)]."""
     valid = []
-    for p in products:
+    for p in suggest.drop_blocked(products, rejected):
         cat = suggest.normalize_category(p)
         pg = p.get("gender_presentation")
         name_key = re.sub(r"[^a-z0-9]", "", (p.get("name") or "").lower())
@@ -426,6 +512,16 @@ def _process(products, grounded, closet, settings, gender, eid, pseudo, rejected
         if p.get("fetch_error"):
             rejected.append({"name": p["name"], "retailer": p.get("retailer"), "reason": p["fetch_error"]})
             continue
+        why_not = vet(p)
+        if why_not:
+            rejected.append({"name": p["name"], "retailer": p.get("retailer"), "reason": why_not,
+                             "url": p.get("product_url")})
+            continue
+        page_key = "page:" + re.sub(r"[?#].*$", "", (p.get("product_url") or "").lower()).rstrip("/")
+        if page_key in seen:  # two listings that resolve to the same product page
+            rejected.append({"name": p["name"], "retailer": p.get("retailer"), "reason": "listed twice (same page)"})
+            continue
+        seen.add(page_key)
         if not_a_product_page(p.get("product_url")) or not host_matches_store(p.get("product_url"), p):
             rejected.append({"name": p["name"], "retailer": p.get("retailer"),
                              "reason": "product link lands on a search / error page"})
@@ -461,7 +557,7 @@ def compute(closet: list[dict], settings: dict, key: str, fetcher=None) -> dict:
     scored = _process(products, grounded, closet, settings, gender, eid, pseudo, rejected, seen, fetcher)
     t_fetch = time.time()
     top, _ = rank(scored, settings)
-    if len(top) < MIN_WANTED + 1 and meta.get("source") == "google_search":
+    if _varied(top) < MIN_WANTED + 1 and meta.get("source") == "google_search":
         # too few grounded products had a usable photo: top up from live store search (one more Gemini call)
         have = collections.Counter(it["category"] for _, it, _ in top)
         focus = [c for c in ["bottom", "outerwear", "shoes", "top"] + ([] if gender == "mens" else ["dress"])
@@ -476,6 +572,25 @@ def compute(closet: list[dict], settings: dict, key: str, fetcher=None) -> dict:
             meta["latency_s"] = round(meta.get("latency_s", 0.0) + meta2.get("latency_s", 0.0), 2)
         except Exception as e:  # the grounded picks still stand
             log.info("wardrobe top-up failed: %s", e)
+    top, _ = rank(scored, settings)
+    if _varied(top) < MIN_WANTED and "google_search" in (meta.get("source") or "") and not meta.get("fixture"):
+        # strict vetting left too few: one more grounded search, steering away from stores we couldn't verify
+        bad = sorted({r["retailer"] for r in rejected if r.get("retailer")})
+        have = collections.Counter(it["category"] for _, it, _ in top)
+        need = [c for c in ["bottom", "outerwear", "shoes", "top"] if have[c] == 0]
+        extra = ("IMPORTANT: every product page must be a standard, publicly readable product page with the product "
+                 "name, price and a photo of the item alone (flat lay or white background). "
+                 + (f"Do NOT use these stores (their pages couldn't be verified): {', '.join(bad)}. " if bad else "")
+                 + (f"Focus on: {', '.join(need)}." if need else ""))
+        try:
+            more, rej3, meta3 = find_products(eid, closet, summary, gender, extra=extra, store_fallback=False)
+            g3 = meta3.pop("grounded", None) or {"text": "", "chunks": [], "supports": []}
+            rejected += rej3
+            scored += _process(more, g3, closet, settings, gender, eid, pseudo, rejected, seen, fetcher)
+            meta["source"] = (meta.get("source") or "") + "+google_search_retry"
+            meta["latency_s"] = round(meta.get("latency_s", 0.0) + meta3.get("latency_s", 0.0), 2)
+        except Exception as e:
+            log.info("wardrobe retry search failed: %s", e)
     top, rej = rank(scored, settings)
     rejected += rej
     keep = {it["id"] for _, it, _ in top}
@@ -532,7 +647,10 @@ def get(refresh: bool = False, wait_s: float = 0.0) -> dict:
     if not refresh:
         cached = load_cached(key)
         if cached is not None:
-            return {**cached, "status": "ready", "cached": True}
+            sugs = [{**x, "reason": sanitize_reason(x.get("reason") or "", x.get("category"),
+                                                    x.get("color") if x.get("color_verified") else None)}
+                    for x in cached.get("suggestions") or [] if not suggest.blocked_store(x)]
+            return {**cached, "suggestions": sugs, "status": "ready", "cached": True}
         err = _errors.get(key)
         if err and time.time() - err["at"] < ERROR_RETRY_S and key not in _jobs:
             return {"status": "error", "closet_key": key, "title": TITLE, "subtitle": SUBTITLE, "suggestions": [],

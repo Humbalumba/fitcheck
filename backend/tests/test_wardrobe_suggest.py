@@ -25,6 +25,8 @@ def _offline_fetch(products, grounded):
         p = dict(p)
         p["image"] = load_image((FX / "images" / p["fixture_image"]).read_bytes())
         p["image_source_url"], p["link_ok"], p["link_status"] = "fixture", True, 200
+        p["product_page"], p["photo_kind"] = True, "product_only"
+        p["page"] = {"name": p["name"], "price": p.get("price"), "types": [p.get("subcategory") or ""]}
         out.append(p)
     return out
 
@@ -41,6 +43,10 @@ def offline_wardrobe(monkeypatch, tmp_path):
     prods.append({**prods[0], "name": prods[0]["name"].upper()})  # listed twice -> dropped
     prods.append({"name": "Leather Belt", "brand": "T", "retailer": "T", "price": 20, "category": "accessory",
                   "subcategory": "belt", "product_url": "https://example.com/belt", "fixture_image": "pairings_0.jpg"})
+    prods.append({**prods[1], "name": "Ludlow Slim-fit Chino", "brand": "J.Crew", "retailer": "J.Crew",
+                  "product_url": "https://www.jcrew.com/p/mens/ludlow-chino/BH1"})  # user blocked J.Crew
+    prods.append({**prods[2], "name": "Flex Oxford Shirt", "brand": "Other", "retailer": "Other",
+                  "product_url": "https://factory.jcrew.com/p/flex-oxford/BH2"})
     (tmp_path / "wardrobe.products.json").write_text(json.dumps({"products": prods}))
     monkeypatch.setenv("FITCHECK_SUGGEST_FIXTURE_DIR", str(tmp_path))
     monkeypatch.setattr(suggest, "fetch_products", _offline_fetch)
@@ -67,6 +73,8 @@ def test_wardrobe_endpoint_offline_ranked_and_cached(client, offline_wardrobe):
     ns = [s["total_new_outfits"] for s in sugs]
     reasons = {x["reason"] for x in d["rejected"]}
     assert "listed twice" in reasons and "not clothes or shoes" in reasons
+    assert sum(r.startswith("blocked store") for r in reasons) >= 1
+    assert not any("jcrew" in (s["product_url"] or "") or "Crew" in (s.get("retailer") or "") for s in sugs)
     # variety: no category repeats while another category is still available among the kept picks
     cats = [s["category"] for s in sugs]
     assert max(cats.count(c) for c in set(cats)) <= 2
@@ -160,3 +168,72 @@ def test_product_link_must_be_on_the_store_site():
     assert host_matches_store("https://us.princesspolly.com/products/x", {"retailer": "Princess Polly"})
     assert host_matches_store("https://www.nike.com/t/air-force-1", {"retailer": "Nike", "brand": "Nike"})
     assert not_a_product_page("https://www.target.com/s/olive+green+pants+men")
+
+
+
+def _vp(**kw):
+    p = {"name": "Blanket Lined Denim Jacket", "brand": "Wrangler", "retailer": "Wrangler", "_category": "outerwear",
+         "product_url": "https://www.wrangler.com/shop/wrangler-blanket-lined-denim-jacket-74265.html",
+         "link_ok": True, "product_page": True, "photo_kind": "product_only",
+         "image_source_url": "https://www.wrangler.com/img/1.jpg",
+         "page": {"name": "Wrangler Blanket Lined Denim Jacket", "price": 64.99, "types": []}}
+    p.update(kw)
+    return p
+
+
+def test_vet_strict_entries():
+    from app.wardrobe_suggest import vet
+    assert vet(_vp()) is None
+    assert "on-model" in vet(_vp(photo_kind="on_model"))                       # lifestyle photo of a man
+    assert "no price" in vet(_vp(page={"name": "X Jacket", "types": []}))
+    assert "product page" in vet(_vp(product_page=False))
+    assert "for shoes" in vet(_vp(name="Leather Sneaker", product_url="https://www.wrangler.com/p/1",
+                                  page={"name": "Leather Sneaker", "price": 60, "types": []}))
+    # a page that never says what the garment is (e.g. just a model number) isn't solid enough
+    assert vet(_vp(name="997H", product_url="https://www.newbalance.com/pd/997h/1.html",
+                   page={"name": "997H", "price": 90, "types": []}, _category="shoes")) is not None
+    assert vet(_vp(name="997H", product_url="https://www.newbalance.com/pd/997h/1.html",
+                   page={"name": "997H", "price": 90, "types": ["Shoes"]}, _category="shoes")) is None
+    # bot wall: photo must come from the store or a known image CDN
+    assert vet(_vp(link_ok=None, page={}, image_source_url="https://random-blog.net/x.jpg")) is not None
+    assert vet(_vp(link_ok=None, page={}, image_source_url="https://lsco.scene7.com/is/image/denim-jacket-1.jpg")) is None
+    # ...and the photo URL must name the product or carry its product code (a bare CDN id isn't enough)
+    assert vet(_vp(link_ok=None, page={}, image_source_url="https://lsco.scene7.com/is/image/723340134_x")) is not None
+    ss = dict(name="Stan Smith Shoes", brand="Adidas", retailer="Adidas", _category="shoes", link_ok=None, page={},
+              product_url="https://www.adidas.com/us/stan-smith-shoes/M20324.html")
+    assert vet(_vp(**ss, image_source_url="https://assets.adidas.com/images/w_500/abc/Stan_Smith_Shoes_White_M20324_01.jpg")) is None
+    af = dict(name="Cloud Fleece Jogger", brand="Abercrombie & Fitch", retailer="Abercrombie & Fitch", _category="bottom",
+              link_ok=None, page={}, product_url="https://www.abercrombie.com/shop/us/p/cloud-fleece-joggers-53413344")
+    assert vet(_vp(**af, image_source_url="https://img.abercrombie.com/is/image/anf/KIC_134-6084-00141-122_prod1")) is not None
+
+
+
+def test_reason_makes_no_color_claims():
+    from app.wardrobe_suggest import sanitize_reason
+    assert sanitize_reason("Olive adds a new color to your outerwear", "outerwear") == \
+        "A new layer to mix with your clothes"
+    assert sanitize_reason("You don't have any shoes in My Closet yet", "shoes") == \
+        "You don't have any shoes in My Closet yet"
+    assert sanitize_reason("A non-hooded layer for a cleaner silhouette", "top") == \
+        "A non-hooded layer for a cleaner silhouette"
+
+
+def test_reason_color_claim_kept_only_when_verified():
+    from app.wardrobe_suggest import sanitize_reason
+    assert sanitize_reason("Olive adds a new color to your outerwear", "outerwear", "olive") == \
+        "Olive adds a new color to your outerwear"
+    assert sanitize_reason("Olive adds a new color to your outerwear", "outerwear", "black") == \
+        "A new layer to mix with your clothes"
+
+
+def test_rank_relaxes_category_cap_only_to_reach_three():
+    from app.wardrobe_suggest import rank
+
+    def mk(name, cat, n):
+        return ({"name": name}, {"id": name, "category": cat},
+                {"n": n, "pieces": n, "redundancy": {"level": "none", "top_similarity": 0.5},
+                 "top_match": {"attributes": {}}, "value": {"value_score": 50}, "verdict": {}, "best_outfit": 0.5})
+    top, _ = rank([mk("s1", "shoes", 9), mk("s2", "shoes", 8), mk("s3", "shoes", 7), mk("s4", "shoes", 6)], {})
+    assert [x[0]["name"] for x in top] == ["s1", "s2", "s3"]
+    top, _ = rank([mk("s1", "shoes", 9), mk("s2", "shoes", 8), mk("s3", "shoes", 7), mk("b1", "bottom", 1)], {})
+    assert [x[0]["name"] for x in top] == ["s1", "s2", "b1"]

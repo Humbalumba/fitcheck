@@ -196,7 +196,7 @@ export default function BuyPage() {
 
   return (
     <div>
-      <PageTitle title="Should I buy it?" subtitle="Snap the item in the store — on a hanger, a rack, or on you." />
+      <PageTitle center title="Should I buy it?" subtitle="Snap the item in the store — on a hanger, a rack, or on you." />
 
       {error && (
         <div className="mb-4">
@@ -677,7 +677,15 @@ function ResultView({
           <Card className="p-5 text-sm text-black/55">
             {unsupported
               ? r.message || "Outfit scoring isn't available for this category yet."
-              : "Nothing matched well enough yet. Try setting outfit matching to Chill in Preferences, or add more of your closet."}
+              : (
+                <>
+                  Nothing matched well enough yet. Try setting outfit matching to Chill in{" "}
+                  <Link href="/profile" className="underline underline-offset-2 text-accent">
+                    Profile
+                  </Link>
+                  , or add more of your closet.
+                </>
+              )}
           </Card>
         ) : (
           <div className="space-y-5">

@@ -256,9 +256,19 @@ export function EmptyState({
   );
 }
 
-export function PageTitle({ title, subtitle, right }: { title: string; subtitle?: string; right?: React.ReactNode }) {
+export function PageTitle({
+  title,
+  subtitle,
+  right,
+  center,
+}: {
+  title: string;
+  subtitle?: string;
+  right?: React.ReactNode;
+  center?: boolean;
+}) {
   return (
-    <div className="flex items-end justify-between gap-3 mb-4">
+    <div className={cn("flex items-end gap-3 mb-4", center ? "justify-center text-center" : "justify-between")}>
       <div>
         <h1 className="text-[26px] font-bold tracking-tight leading-tight">{title}</h1>
         {subtitle && <p className="text-sm text-black/55 mt-0.5">{subtitle}</p>}

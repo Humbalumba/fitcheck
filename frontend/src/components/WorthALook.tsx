@@ -9,7 +9,6 @@ import { Card, LoadingImg, Skeleton } from "./ui";
 
 const POLL_MS = 3000;
 const GIVE_UP_MS = 4 * 60_000;
-const LG_COLS: Record<number, string> = { 1: "lg:grid-cols-3", 2: "lg:grid-cols-3", 3: "lg:grid-cols-3", 4: "lg:grid-cols-4", 5: "lg:grid-cols-5" };
 
 // Last ready answer, kept for this browser session so coming back to the page is instant (the server caches too).
 let lastReady: WardrobeSuggestionsResponse | null = null;
@@ -61,38 +60,37 @@ export function WorthALook({ onPick, busyId }: { onPick: (p: WardrobePick) => vo
   };
 
   return (
-    <section className="mt-6 lg:mt-8" aria-busy={loading} aria-live="polite" data-testid="worth-a-look">
-      <div className="flex items-center gap-2">
-        <Sparkles className="size-4 text-accent" />
-        <h2 className="font-bold text-lg tracking-tight">{data?.title || "Worth a look"}</h2>
+    <section className="mt-8 lg:mt-10 max-w-2xl mx-auto" aria-busy={loading} aria-live="polite" data-testid="worth-a-look">
+      <div className="text-center mb-3">
+        <h2 className="font-bold text-base tracking-tight inline-flex items-center gap-1.5">
+          <Sparkles className="size-4 text-accent" />
+          {data?.title || "Worth a look"}
+        </h2>
+        <p className="text-xs text-black/50">{data?.subtitle || "Picked to fill gaps in My Closet"}</p>
       </div>
-      <p className="text-xs text-black/50 mb-2.5">{data?.subtitle || "Picked to fill gaps in My Closet"}</p>
 
       {loading && (
         <>
-          <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-3", LG_COLS[4])}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {[0, 1, 2, 3].map((i) => (
-              <Card key={i} className={cn("p-3", i === 3 && "hidden lg:block")}>
-                <div className="flex lg:block gap-3">
-                  <Skeleton className="size-24 lg:size-auto lg:aspect-square rounded-2xl shrink-0" />
-                  <div className="flex-1 space-y-2 lg:mt-3 pt-1 lg:pt-0">
-                    <Skeleton className="h-3.5 rounded-full w-4/5" />
-                    <Skeleton className="h-3 rounded-full w-1/2" soft />
-                    <Skeleton className="h-4 rounded-full w-1/4" />
-                    <Skeleton className="h-3 rounded-full w-full" soft />
-                  </div>
+              <Card key={i} className={cn("p-2.5 rounded-2xl flex gap-3", i === 3 && "hidden sm:flex")}>
+                <Skeleton className="size-[72px] sm:size-20 rounded-xl shrink-0" />
+                <div className="flex-1 space-y-2 pt-1">
+                  <Skeleton className="h-3 rounded-full w-4/5" />
+                  <Skeleton className="h-2.5 rounded-full w-1/2" soft />
+                  <Skeleton className="h-2.5 rounded-full w-full" soft />
                 </div>
               </Card>
             ))}
           </div>
-          <p className="text-xs text-black/45 mt-2" data-testid="worth-a-look-loading">
+          <p className="text-xs text-black/45 mt-2 text-center" data-testid="worth-a-look-loading">
             Looking through stores for things that go with your clothes…
           </p>
         </>
       )}
 
       {failed && (
-        <Card className="p-4 text-sm text-black/60 flex items-start gap-3">
+        <Card className="p-3 rounded-2xl text-sm text-black/60 flex items-start gap-3">
           <div className="flex-1">{failed}</div>
           <button onClick={retry} className="inline-flex items-center gap-1 text-xs font-semibold text-accent shrink-0">
             <RefreshCw className="size-3.5" /> Try again
@@ -101,19 +99,19 @@ export function WorthALook({ onPick, busyId }: { onPick: (p: WardrobePick) => vo
       )}
 
       {!loading && !failed && list.length === 0 && (
-        <Card className="p-4 text-sm text-black/55">
+        <Card className="p-3 rounded-2xl text-sm text-black/55 text-center">
           {data?.reason || "Nothing stood out in stores for your closet right now."}
         </Card>
       )}
 
       {list.length > 0 && (
         <>
-          <div className={cn("grid grid-cols-1 sm:grid-cols-2 gap-3", LG_COLS[list.length] ?? "lg:grid-cols-3")}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {list.map((p) => (
               <PickCard key={p.id} p={p} onPick={() => onPick(p)} busy={busyId === p.id} disabled={!!busyId} />
             ))}
           </div>
-          <p className="text-[11px] text-black/40 mt-2">
+          <p className="text-[11px] text-black/40 mt-2 text-center">
             Real products from online stores · prices can change · tap one to check it against your closet
           </p>
         </>
@@ -153,16 +151,16 @@ function PickCard({ p, onPick, busy, disabled }: { p: WardrobePick; onPick: () =
       }}
       data-testid="worth-a-look-card"
       className={cn(
-        "rounded-3xl bg-card border border-black/5 shadow-[0_1px_2px_rgba(60,40,20,0.05)] p-3 flex lg:flex-col gap-3 text-left transition outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+        "rounded-2xl bg-card border border-black/5 shadow-[0_1px_2px_rgba(60,40,20,0.05)] p-2.5 flex gap-3 text-left transition outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
         disabled ? (busy ? "ring-2 ring-accent/40" : "opacity-60") : "cursor-pointer hover:shadow-md active:scale-[0.99]",
       )}
     >
-      <div className="relative size-24 lg:size-auto lg:aspect-square shrink-0 rounded-2xl bg-white overflow-hidden grid place-items-center">
+      <div className="relative size-[72px] sm:size-20 shrink-0 rounded-xl bg-white overflow-hidden grid place-items-center">
         {src && !broken ? (
           <LoadingImg
             src={src}
             alt={p.name}
-            className="size-full object-contain"
+            className="size-full object-contain p-1"
             onError={() => {
               const fallback = mediaUrl(p.image_url);
               if (fallback && fallback !== src) setSrc(fallback);
@@ -170,36 +168,44 @@ function PickCard({ p, onPick, busy, disabled }: { p: WardrobePick; onPick: () =
             }}
           />
         ) : (
-          <ImageOff className="size-6 text-black/20" />
+          <ImageOff className="size-5 text-black/20" />
         )}
       </div>
       <div className="flex-1 min-w-0 flex flex-col">
-        <div className="font-semibold leading-snug line-clamp-2">{displayName(p.name)}</div>
-        {brandLine && <div className="text-xs text-black/50 mt-0.5 truncate">{brandLine}</div>}
-        <div className="text-base font-bold tabular-nums mt-0.5">{money(p.price, p.currency || "USD", p.price != null && !Number.isInteger(p.price) ? 2 : 0)}</div>
-        <p className="text-xs text-black/70 leading-snug mt-1">{p.reason}</p>
-        <p className="text-xs text-black/45 leading-snug mt-0.5">{p.pairs_line}</p>
-        {open && <p className="text-[11px] text-black/45 leading-snug mt-1">{p.details}</p>}
-        <div className="mt-auto pt-2 flex items-center gap-3 flex-wrap">
-          <span className="inline-flex items-center gap-1 text-xs font-semibold text-ink">
-            <Wand2 className="size-3.5" /> {busy ? "Checking…" : "Check it"}
+        <div className="text-[13px] font-semibold leading-snug line-clamp-1">{displayName(p.name)}</div>
+        <div className="text-xs text-black/50 truncate">
+          <span className="font-semibold text-black/75 tabular-nums">
+            {money(p.price, p.currency || "USD", p.price != null && !Number.isInteger(p.price) ? 2 : 0)}
+          </span>
+          {brandLine ? ` · ${brandLine}` : ""}
+        </div>
+        <p className="text-xs text-black/65 leading-snug mt-0.5 line-clamp-2">{p.reason}</p>
+        {open && (
+          <p className="text-[11px] text-black/45 leading-snug mt-0.5">
+            {p.pairs_line} · {p.details}
+          </p>
+        )}
+        <div className="mt-auto pt-1 flex items-center gap-2.5 text-[11px]">
+          <span className="inline-flex items-center gap-0.5 font-semibold text-ink shrink-0">
+            <Wand2 className="size-3" /> {busy ? "Checking…" : "Check it"}
           </span>
           <a
             href={p.product_url}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex items-center gap-1 text-xs font-semibold text-accent hover:underline"
+            className="inline-flex items-center gap-0.5 font-semibold text-accent hover:underline min-w-0"
             data-testid="worth-a-look-store"
+            title={`View at ${store}`}
           >
-            {store} <ExternalLink className="size-3" />
+            <span className="truncate">{store}</span> <ExternalLink className="size-3 shrink-0" />
           </a>
           <button
             onClick={(e) => {
               e.stopPropagation();
               setOpen((o) => !o);
             }}
-            className="ml-auto inline-flex items-center text-[11px] font-medium text-black/40"
+            className="ml-auto inline-flex items-center font-medium text-black/40 shrink-0"
             aria-expanded={open}
           >
             {open ? "Less" : "Details"}
