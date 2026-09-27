@@ -100,14 +100,14 @@ export default function ProfilePage() {
   if (error)
     return (
       <div className={COLUMN}>
-        <PageTitle title="Hi Buzz" />
+        <PageTitle title="Hi Buzz!" />
         <ErrorBanner message={error} onRetry={load} />
       </div>
     );
   if (!s)
     return (
       <div className={COLUMN}>
-        <PageTitle title="Hi Buzz" />
+        <PageTitle title="Hi Buzz!" />
         <div className="space-y-3" aria-busy>
           {[0, 1, 2].map((i) => (
             <Card key={i} className="p-4 flex items-center gap-3">
@@ -139,7 +139,7 @@ export default function ProfilePage() {
 
   return (
     <div className={cn(COLUMN, "space-y-3")}>
-      <PageTitle title="Hi Buzz" subtitle="Your goals, your outfit taste, and how FitCheck decides." />
+      <PageTitle title="Hi Buzz!" subtitle="Your goals, your outfit taste, and how FitCheck decides." />
 
       <ExpandRow icon={<Target className="size-4" />} title="Goals" summary={goalsSummary} defaultOpen testId="row-goals">
         <div className="space-y-5">
