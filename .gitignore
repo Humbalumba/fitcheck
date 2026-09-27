@@ -34,3 +34,4 @@ server.pid
 compat_venv/
 backend/data/render_state.json
 backend/data/suggest_raw/
+.vercel

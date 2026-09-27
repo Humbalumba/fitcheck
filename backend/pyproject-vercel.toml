@@ -1,0 +1,42 @@
+# Copied to backend/pyproject.toml in the Vercel deploy staging dir by /workspace/tools/stage_vercel_full.sh.
+# Runtime-only deps for the Vercel backend service, pinned to the working local venv.
+# No datasets/pandas/pyarrow/pytest/uvicorn (seed scripts, tests and local server only).
+[project]
+name = "fitcheck-backend"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.14.0",
+    "transformers==4.57.6",
+    "tokenizers==0.22.2",
+    "safetensors==0.8.0",
+    "huggingface-hub==0.36.2",
+    "faiss-cpu==1.15.1",
+    "numpy==2.5.2",
+    "scipy==1.18.1",
+    "pillow==12.3.0",
+    "pillow-heif==1.8.0",
+    "opencv-python-headless==5.0.0.93",
+    "fastapi==0.141.1",
+    "starlette==1.7.0",
+    "python-multipart==0.0.32",
+    "pydantic==2.13.5",
+    "google-genai==2.25.0",
+    "requests==2.34.2",
+    "httpx==0.28.1",
+]
+
+[tool.vercel]
+entrypoint = "vercel_entry:app"
+
+[tool.uv]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+# CPU-only torch: the default PyPI Linux wheel pulls ~3 GB of nvidia-* CUDA libs.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

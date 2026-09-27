@@ -5,12 +5,21 @@
             "framework": "nextjs"
         },
         "backend": {
-            "root": "backend"
+            "root": "backend",
+            "entrypoint": "vercel_entry:app",
+            "buildCommand": "python vercel_build.py"
         }
     },
     "rewrites": [
         {
-            "source": "/api/backend(/.*)?",
+            "source": "/api/(.*)",
+            "destination": {
+                "type": "service",
+                "service": "backend"
+            }
+        },
+        {
+            "source": "/media/(.*)",
             "destination": {
                 "type": "service",
                 "service": "backend"
