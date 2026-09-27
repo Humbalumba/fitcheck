@@ -48,7 +48,7 @@ export function ClosetContent({
   return (
     <>
       <PageTitle
-        title="Your closet"
+        title="My Closet"
         subtitle={items ? `${items.length} item${items.length === 1 ? "" : "s"}` : "Loading…"}
         right={
           <Link
