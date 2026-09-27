@@ -95,6 +95,10 @@ const realApi = {
     return request<DetectResponse>("/api/detect", { method: "POST", body: fd });
   },
 
+  /** Same as detect, but from a pasted product link (the backend fetches the page and its product photo). */
+  detectUrl: (url: string, purpose: "closet" | "candidate" = "candidate") =>
+    request<DetectResponse>("/api/detect-url", { method: "POST", body: JSON.stringify({ url, purpose }) }),
+
   addToCloset: async (itemIds: string[], overrides?: Record<string, Partial<Attributes>>) =>
     itemsOf(
       await request<unknown>("/api/closet/items", {

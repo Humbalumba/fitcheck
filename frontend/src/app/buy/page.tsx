@@ -8,8 +8,10 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  ExternalLink,
   Info,
   Layers,
+  Link2,
   RotateCcw,
   Scale,
   ShoppingBag,
@@ -20,7 +22,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { prepareImage } from "@/lib/image";
-import type { Attributes, DetectResponse, EvaluateResponse, Item, WardrobePick } from "@/lib/types";
+import type { Attributes, DetectResponse, EvaluateResponse, Item, ProductListing, WardrobePick } from "@/lib/types";
 import { categoryKey, categoryLabel, templateLabel } from "@/lib/constants";
 import { EST_PRICE_NOTE, cn, estMoney, money, pct, titleCase } from "@/lib/format";
 import { Button, Card, ErrorBanner, FormalityDots, ItemImage, PageTitle, Skeleton } from "@/components/ui";
@@ -52,6 +54,8 @@ export default function BuyPage() {
   const [elapsed, setElapsed] = useState(0);
   const [pick, setPick] = useState<WardrobePick | null>(null); // "Worth a look" product being / been checked
   const [pickBusy, setPickBusy] = useState<string | null>(null);
+  const [linkUrl, setLinkUrl] = useState(""); // "Paste a link" input
+  const [linkHost, setLinkHost] = useState<string | null>(null); // set while / after checking a pasted link
 
   useEffect(() => {
     if (step !== "detecting" && step !== "evaluating") return;
@@ -95,6 +99,37 @@ export default function BuyPage() {
     }
   };
 
+  /** A pasted product link: the backend fetches the page + product photo, then it's the same flow as a photo. */
+  const onLink = async (raw: string) => {
+    const url = raw.trim();
+    if (!url) return;
+    const host = linkHostOf(url);
+    if (!host) {
+      setError("That doesn't look like a link. Paste the full address of the product page.");
+      return;
+    }
+    reset(false);
+    setPreview(null);
+    setLinkHost(host);
+    setStep("detecting");
+    try {
+      const res = await api.detectUrl(url, "candidate");
+      setDet(res);
+      setPreview(res.image_url || null);
+      setStep("select");
+      const first = res.items.find((i) => i.id === res.suggested_item_id) ?? (res.items.length === 1 ? res.items[0] : null);
+      if (first) {
+        setSelected(first.id);
+        setDraft({ ...first.attributes });
+        setPrice(first.attributes.price != null ? String(first.attributes.price) : "");
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      setLinkHost(null);
+      setStep("start");
+    }
+  };
+
   const reset = (clearPreview = true) => {
     setDet(null);
     setSelected(null);
@@ -106,7 +141,11 @@ export default function BuyPage() {
     setEditing(false);
     setPick(null);
     setPickBusy(null);
-    if (clearPreview) setPreview(null);
+    if (clearPreview) {
+      setPreview(null);
+      setLinkUrl("");
+      setLinkHost(null);
+    }
     setStep("start");
   };
 
@@ -196,7 +235,7 @@ export default function BuyPage() {
 
   return (
     <div>
-      <PageTitle center title="Should I buy it?" subtitle="Snap the item in the store — on a hanger, a rack, or on you." />
+      <PageTitle center title="Should I buy it?" subtitle="Snap the item in the store (on a hanger, a rack, or on you), or paste a link if you shop online." />
 
       {error && (
         <div className="mb-4">
@@ -215,15 +254,19 @@ export default function BuyPage() {
             We&apos;ll count how many <b>new outfits</b> it unlocks with your closet, check if you already own
             something like it, and work out the cost per wear.
           </p>
+          <LinkInput value={linkUrl} onChange={setLinkUrl} onSubmit={() => onLink(linkUrl)} />
         </div>
       )}
 
       {/* Store picks for the current closet: loads on its own (polls while the live search runs), never blocks */}
       {step === "start" && <WorthALook onPick={checkPick} busyId={pickBusy} />}
 
-      {(step === "detecting" || step === "select" || step === "evaluating") && preview && (
+      {(step === "detecting" || step === "select" || step === "evaluating") && (preview || linkHost) && (
         <div className="space-y-4 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-6 lg:items-start">
           <div className="lg:sticky lg:top-20">
+            {!preview ? (
+              <LinkLoadingPanel host={linkHost} />
+            ) : (
             <PhotoWithBoxes
               src={det?.image_url || preview}
               boxes={(det?.items ?? []).map((i) => ({ id: i.id, bbox: i.bbox, label: i.label }))}
@@ -231,6 +274,7 @@ export default function BuyPage() {
               onSelect={step === "select" ? choose : undefined}
               scanning={step === "detecting"}
             />
+            )}
           </div>
           <div className="space-y-4 min-w-0">
 
@@ -238,18 +282,24 @@ export default function BuyPage() {
             <>
               <LoadingLine
                 elapsed={elapsed}
-                msgs={["Finding the item…", "Cutting it out…", "Reading color, fabric & price tag…"]}
+                msgs={
+                  linkHost
+                    ? ["Opening the product page…", "Grabbing the product photo…", "Finding the item…", "Reading color, fabric & price…"]
+                    : ["Finding the item…", "Cutting it out…", "Reading color, fabric & price tag…"]
+                }
               />
               <DetectSkeleton />
             </>
           )}
+
+          {step === "select" && det?.product && <ListingCard p={det.product} />}
 
           {step === "select" && det && det.items.length === 0 && (
             <Card className="p-5 text-center">
               <p className="font-semibold">We couldn&apos;t find a clothing item</p>
               <p className="text-sm text-black/55 mt-1">{det.message || "Try again with the item filling more of the frame."}</p>
               <Button className="mt-4" variant="secondary" onClick={() => reset()}>
-                <RotateCcw className="size-4" /> Try another photo
+                <RotateCcw className="size-4" /> {linkHost ? "Try another photo or link" : "Try another photo"}
               </Button>
             </Card>
           )}
@@ -323,7 +373,12 @@ export default function BuyPage() {
 
               <div className="mt-4">
                 <label className="block text-[11px] font-semibold uppercase tracking-wide text-black/45 mb-1">
-                  Price {selItem.attributes.price != null ? "· from tag" : "· optional"}
+                  Price{" "}
+                  {selItem.attributes.price == null
+                    ? "· optional"
+                    : selItem.attributes.price_source === "listing"
+                      ? "· from the product page"
+                      : "· from tag"}
                 </label>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-lg text-black/40">$</span>
@@ -386,13 +441,115 @@ export default function BuyPage() {
 
           {step === "select" && (
             <button onClick={() => reset()} className="w-full text-sm font-semibold text-black/50 py-2">
-              Use a different photo
+              {linkHost ? "Use a different link or photo" : "Use a different photo"}
             </button>
           )}
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+/** "store.com" for a pasted link (with or without https://), or null if it can't be a web link. */
+function linkHostOf(raw: string): string | null {
+  const t = raw.trim();
+  if (!t || /\s/.test(t)) return null;
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`);
+    if (!/^https?:$/.test(u.protocol) || !u.hostname.includes(".")) return null;
+    return u.hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+/** "Paste a link" on the start screen: a product page URL instead of a photo. */
+function LinkInput({ value, onChange, onSubmit }: { value: string; onChange: (v: string) => void; onSubmit: () => void }) {
+  return (
+    <form
+      className="max-w-xl mx-auto mt-6"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit();
+      }}
+    >
+      <div className="flex items-center gap-3 mb-3" aria-hidden>
+        <span className="h-px flex-1 bg-black/10" />
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-black/40">or paste a link</span>
+        <span className="h-px flex-1 bg-black/10" />
+      </div>
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1 min-w-0">
+          <Link2 className="absolute left-4 top-1/2 -translate-y-1/2 size-5 text-black/35 pointer-events-none" />
+          <input
+            type="url"
+            inputMode="url"
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="go"
+            aria-label="Product link"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="https://store.com/products/linen-shirt"
+            className="w-full h-12 rounded-2xl border border-black/10 bg-white pl-11 pr-4 text-[15px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/15"
+            data-testid="product-link-input"
+          />
+        </div>
+        <Button type="submit" variant="primary" className="h-12 sm:w-auto w-full" disabled={!value.trim()}>
+          Check link
+        </Button>
+      </div>
+      <p className="text-[11px] text-black/45 mt-1.5 text-center sm:text-left">
+        Shopping online? Paste the product page and we&apos;ll grab the photo, price and brand.
+      </p>
+    </form>
+  );
+}
+
+/** Left column while a pasted link is being read (there's no photo to show yet). */
+function LinkLoadingPanel({ host }: { host: string | null }) {
+  return (
+    <div className="relative overflow-hidden rounded-3xl bg-sand-deep aspect-[4/5] max-h-[62dvh] w-full grid place-items-center">
+      <Skeleton className="absolute inset-0 rounded-none opacity-60" />
+      <div className="relative flex flex-col items-center gap-2 text-center px-6">
+        <span className="grid place-items-center size-12 rounded-full bg-white/80">
+          <Link2 className="size-6 text-black/50" />
+        </span>
+        <p className="text-sm font-semibold text-black/70">Reading the product page</p>
+        {host && <p className="text-xs text-black/50 truncate max-w-full">{host}</p>}
+      </div>
+    </div>
+  );
+}
+
+/** What the product page said: title, store, listed price, and a link back to it. */
+function ListingCard({ p }: { p: ProductListing }) {
+  const store = p.retailer || linkHostOf(p.final_url || p.url) || "the store";
+  return (
+    <Card className="p-4" data-testid="listing-card">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-black/45">From the product page</p>
+      <p className="font-semibold mt-0.5 leading-snug">{p.title || "Product"}</p>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 text-xs text-black/55">
+        {p.brand && p.brand !== store && <span>{p.brand}</span>}
+        <span>{store}</span>
+        {p.price != null ? (
+          <span className="font-semibold text-ink">{money(p.price)}</span>
+        ) : p.currency && p.currency !== "USD" ? (
+          <span>Price in {p.currency}: enter it in USD below</span>
+        ) : null}
+      </div>
+      <a
+        href={p.final_url || p.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-accent"
+      >
+        View product <ExternalLink className="size-3.5" />
+      </a>
+    </Card>
   );
 }
 

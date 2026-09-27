@@ -19,8 +19,8 @@ export interface Attributes {
   gender_presentation?: string | null;
   brand?: string | null;
   price?: number | null;
-  /** who set `price`: the user, a price tag read by Gemini, or seed/demo data */
-  price_source?: "user" | "tag" | "seed" | string | null;
+  /** who set `price`: the user, a price tag read by Gemini, the product page of a pasted link, or seed/demo data */
+  price_source?: "user" | "tag" | "listing" | "seed" | string | null;
   /** typical new US retail price estimated from brand + type + material (Gemini) or a per-type table */
   estimated_price_usd?: number | null;
   price_confidence?: "high" | "medium" | "low" | string | null;
@@ -48,6 +48,30 @@ export interface DetectResponse {
   items: DetectedItem[];
   message?: string | null; // e.g. "No clothes found…" when only accessories were in the photo
   skipped_accessories?: number;
+  detector?: string;
+  /** "url" when the photo came from a pasted product link (POST /api/detect-url) */
+  source?: "url" | string;
+  /** what the product page said (POST /api/detect-url only) */
+  product?: ProductListing | null;
+  /** detect-url: the detected item that best matches the listing (also items[0]) */
+  suggested_item_id?: string | null;
+}
+
+/** Listing data scraped from a product link (POST /api/detect-url). Any field may be missing. */
+export interface ProductListing {
+  url: string; // the link as entered (normalized)
+  final_url: string; // after redirects; also stored on the item as attributes.product_url
+  title?: string | null;
+  brand?: string | null;
+  retailer?: string | null;
+  price?: number | null; // USD only (null for other currencies)
+  currency?: string | null;
+  color?: string | null;
+  description?: string | null;
+  product_type?: string | null;
+  image_source_url?: string | null;
+  photo_kind?: "product_only" | "photo" | string;
+  source?: "shopify" | "json-ld" | "meta" | "image" | string;
 }
 
 export interface Item {

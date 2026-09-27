@@ -14,6 +14,8 @@ import type {
 } from "./types";
 import { categoryKey, colorToCss } from "./constants";
 
+const titleWords = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+
 const SHAPES: Record<string, string> = {
   top: "M60 40 L85 30 Q100 46 115 30 L140 40 L172 72 L152 92 L140 82 L140 172 L60 172 L60 82 L48 92 L28 72 Z",
   bottom: "M64 28 L136 28 L148 176 L110 176 L100 82 L90 176 L52 176 Z",
@@ -160,6 +162,34 @@ export const mockApi = {
       });
     }
     return { photo_id: nid("ph"), image_url: URL.createObjectURL(file), items };
+  },
+
+  async detectUrl(url: string, purpose: "closet" | "candidate" = "candidate"): Promise<DetectResponse> {
+    await sleep(1500);
+    let u: URL;
+    try {
+      u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`);
+    } catch {
+      throw new Error("That doesn't look like a valid link.");
+    }
+    if (!/^https?:$/.test(u.protocol)) throw new Error("Only web links (http or https) are supported.");
+    const [cat, sub, color, extra] = DETECT_POOL[Math.floor(Math.random() * DETECT_POOL.length)];
+    const title = `${titleWords(color)} ${titleWords(sub)}`;
+    const it = mk(cat, sub, color, { ...extra, price: 59, price_source: "listing", product_url: u.href, listing_title: title });
+    it.status = purpose === "candidate" ? "candidate" : "detected";
+    pending.set(it.id, it);
+    const items: DetectedItem[] = [
+      { id: it.id, bbox: [60, 120, 940, 880], label: `${color} ${sub}`, cutout_url: it.cutout_url, crop_url: it.cutout_url, attributes: clone(it.attributes) },
+    ];
+    const host = u.hostname.replace(/^www\./, "");
+    return {
+      photo_id: nid("ph"),
+      image_url: it.cutout_url,
+      items,
+      source: "url",
+      suggested_item_id: it.id,
+      product: { url: u.href, final_url: u.href, title, retailer: host, price: 59, currency: "USD", color, source: "meta" },
+    };
   },
 
   async addToCloset(itemIds: string[], overrides?: Record<string, Partial<Attributes>>): Promise<Item[]> {
