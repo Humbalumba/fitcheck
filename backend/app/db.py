@@ -1,323 +1,355 @@
-"""SQLite storage: a small graph in relational form.
+"""Storage layer: SQLAlchemy Core over Postgres (DATABASE_URL, e.g. Neon) or SQLite for local dev.
 
-Nodes: photos, items, outfits, evaluations. Edges: compat_edges (item<->item(s)
-compatibility cache), outfit_items (outfit -> item), items.photo_id (item -> photo).
-Plain sqlite3; one connection per call, WAL mode so the API threads can share.
+Multi-user: every function here works on the CURRENT user's rows only. The user comes from a ContextVar set by
+the auth dependency (app/auth.py) for each request, and copied into background work via CtxExecutor / bind().
+If no user is set, data functions raise NoUserContext (fail closed) instead of touching anyone's data.
+Media paths are stored relative to MEDIA_DIR (u/<user_id>/...) and returned as absolute local paths.
 """
 from __future__ import annotations
 
+import contextvars
 import json
-import sqlite3
+import logging
+import os
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
+from sqlalchemy import and_, create_engine, delete, event, func, or_, select, update
+from sqlalchemy.engine import Engine
 
 from . import config
+from . import models as m
 
-_init_lock = threading.Lock()
-_initialized = False
+log = logging.getLogger("fitcheck.db")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS photos (
-    id TEXT PRIMARY KEY,
-    path TEXT NOT NULL,
-    purpose TEXT,
-    width INTEGER, height INTEGER,
-    source TEXT,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS items (
-    id TEXT PRIMARY KEY,
-    status TEXT NOT NULL CHECK (status IN ('closet','candidate','detected','suggestion')),
-    category TEXT,
-    attributes TEXT NOT NULL DEFAULT '{}',
-    photo_id TEXT REFERENCES photos(id) ON DELETE SET NULL,
-    bbox TEXT,
-    label TEXT,
-    crop_path TEXT,
-    cutout_path TEXT,
-    white_path TEXT,
-    context_path TEXT,
-    source TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_items_status ON items(status, category);
-CREATE TABLE IF NOT EXISTS item_embeddings (
-    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,           -- 'fclip' | 'compat'
-    model TEXT NOT NULL,
-    dim INTEGER NOT NULL,
-    vector BLOB NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (item_id, kind)
-);
-CREATE TABLE IF NOT EXISTS compat_edges (
-    outfit_key TEXT NOT NULL,     -- sorted item ids joined by '|'
-    model TEXT NOT NULL,
-    item_a TEXT NOT NULL,
-    item_b TEXT,
-    item_c TEXT,
-    n_items INTEGER NOT NULL,
-    score REAL NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (outfit_key, model)
-);
-CREATE INDEX IF NOT EXISTS idx_compat_a ON compat_edges(item_a);
-CREATE INDEX IF NOT EXISTS idx_compat_b ON compat_edges(item_b);
-CREATE TABLE IF NOT EXISTS evaluations (
-    id TEXT PRIMARY KEY,
-    candidate_item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
-    price REAL,
-    verdict TEXT,
-    results TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS outfits (
-    id TEXT PRIMARY KEY,
-    evaluation_id TEXT REFERENCES evaluations(id) ON DELETE CASCADE,
-    template TEXT NOT NULL,
-    score REAL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS outfit_items (
-    outfit_id TEXT NOT NULL REFERENCES outfits(id) ON DELETE CASCADE,
-    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    position INTEGER,
-    PRIMARY KEY (outfit_id, item_id)
-);
--- shopping suggestions per evaluation (cached so re-opening a result doesn't spend Gemini quota)
-CREATE TABLE IF NOT EXISTS suggestions (
-    evaluation_id TEXT PRIMARY KEY REFERENCES evaluations(id) ON DELETE CASCADE,
-    mode TEXT NOT NULL,           -- 'alternatives' (verdict SKIP) | 'pairings' (verdict BUY)
-    results TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS settings (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    data TEXT NOT NULL,
-    updated_at TEXT
-);
-"""
+# ------------------------------------------------------------------ engine
+_engine: Engine | None = None
+_engine_lock = threading.Lock()
 
 
+def database_url() -> str:
+    url = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or "").strip()
+    if not url:
+        return f"sqlite:///{config.DATA_DIR / 'fitcheck-local.db'}"  # dev only; never the legacy fitcheck.db
+    for pre in ("postgres://", "postgresql://"):
+        if url.startswith(pre):
+            return "postgresql+psycopg://" + url[len(pre):]
+    return url
+
+
+def engine() -> Engine:
+    global _engine
+    if _engine is None:
+        with _engine_lock:
+            if _engine is None:
+                url = database_url()
+                if url.startswith("sqlite"):
+                    eng = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
+
+                    @event.listens_for(eng, "connect")
+                    def _fk(dbapi_conn, _):  # noqa: ANN001
+                        dbapi_conn.execute("PRAGMA foreign_keys = ON")
+                        dbapi_conn.execute("PRAGMA journal_mode = WAL")
+                else:
+                    # prepare_threshold=None: safe behind Neon's PgBouncer (transaction pooling)
+                    eng = create_engine(url, pool_pre_ping=True, pool_size=int(os.environ.get("DB_POOL_SIZE", "5")),
+                                        max_overflow=5, pool_recycle=300, connect_args={"prepare_threshold": None})
+                _engine = eng
+    return _engine
+
+
+def is_postgres() -> bool:
+    return engine().dialect.name == "postgresql"
+
+
+_migrated = False
+_mig_lock = threading.Lock()
+
+
+def init_db() -> None:
+    """Bring the schema to the newest Alembic revision (idempotent, cheap when already current)."""
+    global _migrated
+    with _mig_lock:
+        if _migrated:
+            return
+        from alembic import command
+        from alembic.config import Config
+        cfg = Config(str(config.BACKEND_DIR / "alembic.ini"))
+        cfg.set_main_option("script_location", str(config.BACKEND_DIR / "migrations"))
+        cfg.attributes["engine"] = engine()
+        command.upgrade(cfg, "head")
+        _migrated = True
+
+
+@contextmanager
+def tx():
+    with engine().begin() as c:
+        yield c
+
+
+def _upsert(conn, table, values: dict | list[dict], keys: list[str], update_cols: list[str] | None = None):
+    rows = values if isinstance(values, list) else [values]
+    if not rows:
+        return
+    if conn.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as _ins
+    else:
+        from sqlalchemy.dialects.sqlite import insert as _ins
+    stmt = _ins(table).values(rows)
+    cols = update_cols if update_cols is not None else [k for k in rows[0] if k not in keys]
+    stmt = stmt.on_conflict_do_update(index_elements=keys, set_={c: stmt.excluded[c] for c in cols}) if cols \
+        else stmt.on_conflict_do_nothing(index_elements=keys)
+    conn.execute(stmt)
+
+
+# ------------------------------------------------------------------ current user
+class NoUserContext(RuntimeError):
+    pass
+
+
+_current_user: contextvars.ContextVar[str | None] = contextvars.ContextVar("fitcheck_user", default=None)
+
+
+def current_user_id() -> str:
+    uid = _current_user.get()
+    if not uid:
+        raise NoUserContext("no authenticated user in this context")
+    return uid
+
+
+def maybe_user_id() -> str | None:
+    return _current_user.get()
+
+
+def set_user(uid: str | None):
+    return _current_user.set(uid)
+
+
+@contextmanager
+def as_user(uid: str):
+    tok = _current_user.set(uid)
+    try:
+        yield
+    finally:
+        _current_user.reset(tok)
+
+
+def bind(fn):
+    """fn bound to a copy of the current context (user id) -- for threads / timers."""
+    ctx = contextvars.copy_context()
+    return lambda *a, **k: ctx.run(fn, *a, **k)
+
+
+class CtxExecutor(ThreadPoolExecutor):
+    """ThreadPoolExecutor whose tasks run with the submitter's context (so db calls stay scoped to that user)."""
+
+    def submit(self, fn, /, *args, **kwargs):
+        return super().submit(contextvars.copy_context().run, fn, *args, **kwargs)
+
+
+# ------------------------------------------------------------------ helpers
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def new_id(prefix: str = "") -> str:
-    return prefix + uuid.uuid4().hex[:12]
+    return prefix + uuid.uuid4().hex[:16]
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.DB_PATH, timeout=30, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
-
-
-def init_db() -> None:
-    global _initialized
-    with _init_lock:
-        if _initialized and config.DB_PATH.exists():
-            return
-        conn = _connect()
-        _migrate_items_status(conn)
-        conn.executescript(SCHEMA)
-        row = conn.execute("SELECT data FROM settings WHERE id=1").fetchone()
-        if row is None:
-            conn.execute("INSERT INTO settings(id, data, updated_at) VALUES (1, ?, ?)",
-                         (json.dumps(config.DEFAULT_SETTINGS), now_iso()))
-        conn.commit()
-        conn.close()
-        _initialized = True
-
-
-ITEM_COLUMNS = ("id, status, category, attributes, photo_id, bbox, label, crop_path, cutout_path, white_path, "
-                "context_path, source, created_at, updated_at")
-
-
-def _migrate_items_status(conn: sqlite3.Connection) -> None:
-    """Older DBs have CHECK (status IN ('closet','candidate','detected')). SQLite can't ALTER a CHECK, so rebuild
-    the items table (standard 12-step procedure: FKs off, copy rows, swap, verify) keeping every row, then
-    re-enable FKs. Embeddings / outfits / evaluations keep pointing at the same item ids."""
-    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='items'").fetchone()
-    if row is None or "'suggestion'" in (row[0] or ""):
-        return
-    items_ddl = SCHEMA.split("CREATE TABLE IF NOT EXISTS items (", 1)[1].split(");", 1)[0]
-    n_before = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
-    old_iso = conn.isolation_level
-    conn.isolation_level = None  # manual transaction control (PRAGMA foreign_keys is a no-op inside one)
-    conn.execute("PRAGMA foreign_keys = OFF")
+def _rel(p) -> str | None:
+    """Absolute path under MEDIA_DIR -> 'u/<uid>/...' (what is stored)."""
+    if not p:
+        return None
+    p = Path(p)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DROP TABLE IF EXISTS items_new")
-        conn.execute(f"CREATE TABLE items_new ({items_ddl})")
-        conn.execute(f"INSERT INTO items_new ({ITEM_COLUMNS}) SELECT {ITEM_COLUMNS} FROM items")
-        n_after = conn.execute("SELECT COUNT(*) FROM items_new").fetchone()[0]
-        if n_after != n_before:
-            raise RuntimeError(f"items migration copied {n_after}/{n_before} rows")
-        conn.execute("DROP TABLE items")
-        conn.execute("ALTER TABLE items_new RENAME TO items")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_status ON items(status, category)")
-        bad = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if bad:
-            raise RuntimeError(f"foreign key check failed after items migration: {bad[:3]}")
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.isolation_level = old_iso
-    import logging
-    logging.getLogger("fitcheck.db").info("Migrated items table: status CHECK now allows 'suggestion' (%d rows kept)",
-                                          n_before)
+        return p.resolve().relative_to(config.MEDIA_DIR.resolve()).as_posix()
+    except ValueError:
+        return str(p)
 
 
-@contextmanager
-def get_conn():
-    init_db()
-    conn = _connect()
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+def abs_media(p) -> str | None:
+    if not p:
+        return None
+    return str(p) if os.path.isabs(str(p)) else str(config.MEDIA_DIR / p)
+
+
+_PATH_COLS = ("crop_path", "cutout_path", "white_path", "context_path")
 
 
 # ---------------------------------------------------------------- settings
 def get_settings() -> dict:
-    with get_conn() as c:
-        row = c.execute("SELECT data FROM settings WHERE id=1").fetchone()
+    uid = current_user_id()
+    with tx() as c:
+        row = c.execute(select(m.settings.c.data).where(m.settings.c.user_id == uid)).first()
     data = dict(config.DEFAULT_SETTINGS)
     if row:
-        data.update({k: v for k, v in json.loads(row["data"]).items() if k in config.DEFAULT_SETTINGS})
+        data.update({k: v for k, v in json.loads(row.data).items() if k in config.DEFAULT_SETTINGS})
     return data
 
 
 def update_settings(partial: dict) -> dict:
+    uid = current_user_id()
     cur = get_settings()
     cur.update({k: v for k, v in partial.items() if k in config.DEFAULT_SETTINGS})
-    with get_conn() as c:
-        c.execute("UPDATE settings SET data=?, updated_at=? WHERE id=1", (json.dumps(cur), now_iso()))
+    with tx() as c:
+        _upsert(c, m.settings, {"user_id": uid, "data": json.dumps(cur), "updated_at": now_iso()}, ["user_id"])
     return cur
 
 
 # ---------------------------------------------------------------- photos / items
 def insert_photo(path: str, purpose: str | None, width: int, height: int, source: str = "upload") -> str:
+    uid = current_user_id()
     pid = new_id("ph_")
-    with get_conn() as c:
-        c.execute("INSERT INTO photos(id,path,purpose,width,height,source,created_at) VALUES (?,?,?,?,?,?,?)",
-                  (pid, path, purpose, width, height, source, now_iso()))
+    with tx() as c:
+        c.execute(m.photos.insert().values(id=pid, user_id=uid, path=_rel(path), purpose=purpose, width=width,
+                                           height=height, source=source, created_at=now_iso()))
     return pid
+
+
+def get_photo(photo_id: str | None) -> dict | None:
+    if not photo_id:
+        return None
+    uid = current_user_id()
+    with tx() as c:
+        row = c.execute(select(m.photos).where(m.photos.c.id == photo_id, m.photos.c.user_id == uid)).mappings().first()
+    if not row:
+        return None
+    d = dict(row)
+    d["path"] = abs_media(d["path"])
+    return d
 
 
 def insert_item(*, status: str, category: str | None, attributes: dict, photo_id: str | None = None,
                 bbox=None, label: str | None = None, crop_path=None, cutout_path=None, white_path=None,
                 context_path=None, source: str = "upload", item_id: str | None = None) -> str:
+    uid = current_user_id()
     iid = item_id or new_id("it_")
-    with get_conn() as c:
-        c.execute(
-            """INSERT INTO items(id,status,category,attributes,photo_id,bbox,label,crop_path,cutout_path,
-               white_path,context_path,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (iid, status, category, json.dumps(attributes), photo_id, json.dumps(bbox) if bbox else None, label,
-             str(crop_path) if crop_path else None, str(cutout_path) if cutout_path else None,
-             str(white_path) if white_path else None, str(context_path) if context_path else None,
-             source, now_iso(), now_iso()))
+    ts = now_iso()
+    with tx() as c:
+        c.execute(m.items.insert().values(
+            id=iid, user_id=uid, status=status, category=category, attributes=json.dumps(attributes),
+            photo_id=photo_id, bbox=json.dumps(bbox) if bbox else None, label=label, crop_path=_rel(crop_path),
+            cutout_path=_rel(cutout_path), white_path=_rel(white_path), context_path=_rel(context_path),
+            source=source, created_at=ts, updated_at=ts))
     return iid
 
 
-def _row_to_item(row: sqlite3.Row) -> dict:
+def _row_to_item(row) -> dict:
     d = dict(row)
+    d.pop("user_id", None)
     d["attributes"] = json.loads(d.get("attributes") or "{}")
     d["bbox"] = json.loads(d["bbox"]) if d.get("bbox") else None
+    for k in _PATH_COLS:
+        d[k] = abs_media(d.get(k))
     return d
 
 
 def get_item(item_id: str) -> dict | None:
-    with get_conn() as c:
-        row = c.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+    uid = current_user_id()
+    with tx() as c:
+        row = c.execute(select(m.items).where(m.items.c.id == item_id, m.items.c.user_id == uid)).mappings().first()
     return _row_to_item(row) if row else None
 
 
 def list_items(status: str | None = None, category: str | None = None) -> list[dict]:
-    q, args = "SELECT * FROM items WHERE 1=1", []
+    uid = current_user_id()
+    q = select(m.items).where(m.items.c.user_id == uid)
     if status:
-        q += " AND status=?"; args.append(status)
+        q = q.where(m.items.c.status == status)
     if category:
-        q += " AND category=?"; args.append(category)
-    q += " ORDER BY created_at, id"
-    with get_conn() as c:
-        rows = c.execute(q, args).fetchall()
+        q = q.where(m.items.c.category == category)
+    with tx() as c:
+        rows = c.execute(q.order_by(m.items.c.created_at, m.items.c.id)).mappings().all()
     return [_row_to_item(r) for r in rows]
 
 
 def update_item(item_id: str, *, status: str | None = None, attributes: dict | None = None,
                 category: str | None = None) -> None:
-    sets, args = ["updated_at=?"], [now_iso()]
+    uid = current_user_id()
+    vals: dict = {"updated_at": now_iso()}
     if status is not None:
-        sets.append("status=?"); args.append(status)
+        vals["status"] = status
     if attributes is not None:
-        sets.append("attributes=?"); args.append(json.dumps(attributes))
+        vals["attributes"] = json.dumps(attributes)
         if category is None and attributes.get("category"):
             category = attributes["category"]
     if category is not None:
-        sets.append("category=?"); args.append(category)
-    args.append(item_id)
-    with get_conn() as c:
-        c.execute(f"UPDATE items SET {', '.join(sets)} WHERE id=?", args)
+        vals["category"] = category
+    with tx() as c:
+        c.execute(update(m.items).where(m.items.c.id == item_id, m.items.c.user_id == uid).values(**vals))
+
+
+def _compat_touching(item_id: str):
+    t = m.compat_edges.c
+    return or_(t.item_a == item_id, t.item_b == item_id, t.item_c == item_id, t.outfit_key.contains(item_id))
 
 
 def delete_item(item_id: str) -> None:
-    with get_conn() as c:
-        c.execute("DELETE FROM compat_edges WHERE item_a=? OR item_b=? OR item_c=? OR outfit_key LIKE ?",
-                  (item_id, item_id, item_id, f"%{item_id}%"))
-        c.execute("DELETE FROM items WHERE id=?", (item_id,))
+    uid = current_user_id()
+    with tx() as c:
+        c.execute(delete(m.compat_edges).where(m.compat_edges.c.user_id == uid, _compat_touching(item_id)))
+        c.execute(delete(m.items).where(m.items.c.id == item_id, m.items.c.user_id == uid))
 
 
 def invalidate_compat(item_id: str) -> None:
-    with get_conn() as c:
-        c.execute("DELETE FROM compat_edges WHERE outfit_key LIKE ?", (f"%{item_id}%",))
+    uid = current_user_id()
+    with tx() as c:
+        c.execute(delete(m.compat_edges).where(m.compat_edges.c.user_id == uid,
+                                               m.compat_edges.c.outfit_key.contains(item_id)))
+
+
+def referenced_item_ids() -> set[str]:
+    """Item ids still used by an evaluation (as candidate) or a saved outfit."""
+    uid = current_user_id()
+    with tx() as c:
+        a = c.execute(select(m.evaluations.c.candidate_item_id).where(
+            m.evaluations.c.user_id == uid, m.evaluations.c.candidate_item_id.is_not(None))).scalars().all()
+        b = c.execute(select(m.outfit_items.c.item_id).where(m.outfit_items.c.user_id == uid)).scalars().all()
+    return set(a) | set(b)
 
 
 # ---------------------------------------------------------------- embeddings
 def put_embedding(item_id: str, kind: str, model: str, vec: np.ndarray) -> None:
+    uid = current_user_id()
     v = np.asarray(vec, dtype=np.float32).ravel()
-    with get_conn() as c:
-        c.execute("""INSERT OR REPLACE INTO item_embeddings(item_id,kind,model,dim,vector,created_at)
-                     VALUES (?,?,?,?,?,?)""", (item_id, kind, model, v.shape[0], v.tobytes(), now_iso()))
+    with tx() as c:
+        if c.execute(select(m.items.c.id).where(m.items.c.id == item_id, m.items.c.user_id == uid)).first() is None:
+            return
+        _upsert(c, m.item_embeddings, {"item_id": item_id, "kind": kind, "user_id": uid, "model": model,
+                                       "dim": int(v.shape[0]), "vector": v.tobytes(), "created_at": now_iso()},
+                ["item_id", "kind"])
+
+
+def delete_embeddings(item_id: str, kinds: list[str]) -> None:
+    uid = current_user_id()
+    with tx() as c:
+        c.execute(delete(m.item_embeddings).where(m.item_embeddings.c.user_id == uid,
+                                                  m.item_embeddings.c.item_id == item_id,
+                                                  m.item_embeddings.c.kind.in_(kinds)))
 
 
 def get_embedding(item_id: str, kind: str, model: str | None = None) -> np.ndarray | None:
-    with get_conn() as c:
-        row = c.execute("SELECT model, vector FROM item_embeddings WHERE item_id=? AND kind=?",
-                        (item_id, kind)).fetchone()
-    if row is None or (model is not None and row["model"] != model):
-        return None
-    return np.frombuffer(row["vector"], dtype=np.float32).copy()
+    return get_embeddings([item_id], kind, model).get(item_id)
 
 
 def get_embeddings(item_ids: list[str], kind: str, model: str | None = None) -> dict[str, np.ndarray]:
     if not item_ids:
         return {}
+    uid = current_user_id()
+    t = m.item_embeddings.c
     out = {}
-    with get_conn() as c:
+    with tx() as c:
         for i in range(0, len(item_ids), 500):
-            chunk = item_ids[i:i + 500]
-            rows = c.execute(
-                f"SELECT item_id, model, vector FROM item_embeddings WHERE kind=? AND item_id IN ({','.join('?'*len(chunk))})",
-                [kind, *chunk]).fetchall()
+            rows = c.execute(select(t.item_id, t.model, t.vector).where(
+                t.user_id == uid, t.kind == kind, t.item_id.in_(item_ids[i:i + 500]))).all()
             for r in rows:
-                if model is None or r["model"] == model:
-                    out[r["item_id"]] = np.frombuffer(r["vector"], dtype=np.float32).copy()
+                if model is None or r.model == model:
+                    out[r.item_id] = np.frombuffer(bytes(r.vector), dtype=np.float32).copy()
     return out
 
 
@@ -327,82 +359,184 @@ def outfit_key(ids: list[str]) -> str:
 
 
 def get_compat_scores(keys: list[str], model: str) -> dict[str, float]:
-    out = {}
+    out: dict[str, float] = {}
     if not keys:
         return out
-    with get_conn() as c:
+    uid = current_user_id()
+    t = m.compat_edges.c
+    with tx() as c:
         for i in range(0, len(keys), 500):
-            chunk = keys[i:i + 500]
-            rows = c.execute(
-                f"SELECT outfit_key, score FROM compat_edges WHERE model=? AND outfit_key IN ({','.join('?'*len(chunk))})",
-                [model, *chunk]).fetchall()
-            out.update({r["outfit_key"]: r["score"] for r in rows})
+            rows = c.execute(select(t.outfit_key, t.score).where(
+                t.user_id == uid, t.model == model, t.outfit_key.in_(keys[i:i + 500]))).all()
+            out.update({r.outfit_key: r.score for r in rows})
     return out
 
 
 def put_compat_scores(entries: list[tuple[list[str], float]], model: str) -> None:
+    uid = current_user_id()
     ts = now_iso()
-    rows = []
+    rows = {}
     for ids, score in entries:
         s = sorted(ids)
-        rows.append((outfit_key(s), model, s[0], s[1] if len(s) > 1 else None, s[2] if len(s) > 2 else None,
-                     len(s), float(score), ts))
-    with get_conn() as c:
-        c.executemany("""INSERT OR REPLACE INTO compat_edges(outfit_key,model,item_a,item_b,item_c,n_items,score,created_at)
-                         VALUES (?,?,?,?,?,?,?,?)""", rows)
+        rows[outfit_key(s)] = {"user_id": uid, "outfit_key": outfit_key(s), "model": model, "item_a": s[0],
+                               "item_b": s[1] if len(s) > 1 else None, "item_c": s[2] if len(s) > 2 else None,
+                               "n_items": len(s), "score": float(score), "created_at": ts}
+    vals = list(rows.values())
+    with tx() as c:
+        for i in range(0, len(vals), 500):
+            _upsert(c, m.compat_edges, vals[i:i + 500], ["user_id", "outfit_key", "model"])
 
 
 # ---------------------------------------------------------------- evaluations
 def save_evaluation(candidate_id: str, price, verdict: str, results: dict, outfits: list[dict]) -> str:
+    uid = current_user_id()
     eid = new_id("ev_")
     ts = now_iso()
-    with get_conn() as c:
-        c.execute("INSERT INTO evaluations(id,candidate_item_id,price,verdict,results,created_at) VALUES (?,?,?,?,?,?)",
-                  (eid, candidate_id, price, verdict, json.dumps(results), ts))
+    with tx() as c:
+        c.execute(m.evaluations.insert().values(id=eid, user_id=uid, candidate_item_id=candidate_id, price=price,
+                                                verdict=verdict, results=json.dumps(results), created_at=ts))
         for o in outfits:
             oid = new_id("of_")
-            c.execute("INSERT INTO outfits(id,evaluation_id,template,score,created_at) VALUES (?,?,?,?,?)",
-                      (oid, eid, o["template"], o["score"], ts))
-            c.executemany("INSERT OR IGNORE INTO outfit_items(outfit_id,item_id,position) VALUES (?,?,?)",
-                          [(oid, iid, pos) for pos, iid in enumerate(o["item_ids"])])
+            c.execute(m.outfits.insert().values(id=oid, user_id=uid, evaluation_id=eid, template=o["template"],
+                                                score=o["score"], created_at=ts))
+            seen, rows = set(), []
+            for pos, iid in enumerate(o["item_ids"]):
+                if iid not in seen:
+                    seen.add(iid)
+                    rows.append({"outfit_id": oid, "item_id": iid, "user_id": uid, "position": pos})
+            if rows:
+                c.execute(m.outfit_items.insert(), rows)
     return eid
 
 
 def get_evaluation(eid: str) -> dict | None:
-    with get_conn() as c:
-        row = c.execute("SELECT * FROM evaluations WHERE id=?", (eid,)).fetchone()
+    uid = current_user_id()
+    with tx() as c:
+        row = c.execute(select(m.evaluations).where(m.evaluations.c.id == eid,
+                                                    m.evaluations.c.user_id == uid)).mappings().first()
     if row is None:
         return None
     d = dict(row)
+    d.pop("user_id", None)
     d["results"] = json.loads(d["results"])
     return d
 
 
 def latest_evaluation_for_item(item_id: str) -> dict | None:
-    with get_conn() as c:
-        row = c.execute("SELECT id FROM evaluations WHERE candidate_item_id=? ORDER BY created_at DESC, rowid DESC "
-                        "LIMIT 1", (item_id,)).fetchone()
-    return get_evaluation(row[0]) if row else None
+    uid = current_user_id()
+    t = m.evaluations.c
+    with tx() as c:
+        eid = c.execute(select(t.id).where(t.user_id == uid, t.candidate_item_id == item_id)
+                        .order_by(t.created_at.desc(), t.id.desc()).limit(1)).scalar()
+    return get_evaluation(eid) if eid else None
 
 
 def get_suggestions(eid: str) -> dict | None:
-    with get_conn() as c:
-        row = c.execute("SELECT results FROM suggestions WHERE evaluation_id=?", (eid,)).fetchone()
-    return json.loads(row["results"]) if row else None
+    uid = current_user_id()
+    t = m.suggestions.c
+    with tx() as c:
+        r = c.execute(select(t.results).where(t.evaluation_id == eid, t.user_id == uid)).scalar()
+    return json.loads(r) if r else None
 
 
 def save_suggestions(eid: str, mode: str, results: dict) -> None:
-    with get_conn() as c:
-        c.execute("INSERT OR REPLACE INTO suggestions(evaluation_id, mode, results, created_at) VALUES (?,?,?,?)",
-                  (eid, mode, json.dumps(results), now_iso()))
+    uid = current_user_id()
+    if get_evaluation(eid) is None:
+        return
+    with tx() as c:
+        _upsert(c, m.suggestions, {"evaluation_id": eid, "user_id": uid, "mode": mode, "results": json.dumps(results),
+                                   "created_at": now_iso()}, ["evaluation_id"])
+
+
+# ---------------------------------------------------------------- render records (app/render.py)
+def _render_row(r) -> dict:
+    d = dict(r)
+    d.pop("user_id", None)
+    try:
+        d["checks"] = json.loads(d.get("checks") or "null")
+    except Exception:
+        d["checks"] = None
+    d["clean_path"] = abs_media(d.get("clean_path"))
+    return d
+
+
+def render_records() -> dict[str, dict]:
+    uid = current_user_id()
+    with tx() as c:
+        rows = c.execute(select(m.item_renders).where(m.item_renders.c.user_id == uid)).mappings().all()
+    return {r["item_id"]: _render_row(r) for r in rows}
+
+
+def render_upsert(rec: dict) -> bool:
+    """False if the item no longer exists (deleted meanwhile)."""
+    uid = current_user_id()
+    with tx() as c:
+        if c.execute(select(m.items.c.id).where(m.items.c.id == rec["item_id"], m.items.c.user_id == uid)).first() is None:
+            return False
+        _upsert(c, m.item_renders, {
+            "item_id": rec["item_id"], "user_id": uid, "status": rec.get("status") or "pending",
+            "method": rec.get("method"), "clean_path": _rel(rec.get("clean_path")), "model": rec.get("model"),
+            "checks": json.dumps(rec.get("checks")), "embed_source": rec.get("embed_source"),
+            "error": rec.get("error"), "created_at": rec["created_at"], "updated_at": rec["updated_at"]}, ["item_id"])
+    return True
+
+
+def render_delete(item_id: str) -> None:
+    uid = current_user_id()
+    with tx() as c:
+        c.execute(delete(m.item_renders).where(m.item_renders.c.item_id == item_id, m.item_renders.c.user_id == uid))
+
+
+def details_get(item_id: str) -> tuple[dict, str] | None:
+    uid = current_user_id()
+    t = m.item_render_details.c
+    with tx() as c:
+        r = c.execute(select(t.details, t.frame).where(t.item_id == item_id, t.user_id == uid)).first()
+    return (json.loads(r.details), r.frame) if r else None
+
+
+def details_save(item_id: str, details: dict, frame: str, model: str | None) -> None:
+    uid = current_user_id()
+    with tx() as c:
+        if c.execute(select(m.items.c.id).where(m.items.c.id == item_id, m.items.c.user_id == uid)).first() is None:
+            return
+        _upsert(c, m.item_render_details, {"item_id": item_id, "user_id": uid, "details": json.dumps(details),
+                                           "frame": frame, "model": model, "created_at": now_iso()}, ["item_id"])
+
+
+def details_delete(item_id: str) -> None:
+    uid = current_user_id()
+    t = m.item_render_details
+    with tx() as c:
+        c.execute(delete(t).where(t.c.item_id == item_id, t.c.user_id == uid))
+
+
+# ---------------------------------------------------------------- "Worth a look" cache
+def wardrobe_get(key: str) -> dict | None:
+    uid = current_user_id()
+    t = m.wardrobe_suggestions.c
+    with tx() as c:
+        r = c.execute(select(t.results).where(t.user_id == uid, t.closet_key == key)).scalar()
+    return json.loads(r) if r else None
+
+
+def wardrobe_put(key: str, res: dict) -> None:
+    uid = current_user_id()
+    t = m.wardrobe_suggestions
+    with tx() as c:
+        c.execute(delete(t).where(t.c.user_id == uid, t.c.closet_key != key))
+        _upsert(c, t, {"user_id": uid, "closet_key": key, "results": json.dumps(res), "created_at": now_iso()},
+                ["user_id", "closet_key"])
+
+
+# ---------------------------------------------------------------- whole-user operations
+def delete_all_user_data(uid: str) -> None:
+    """Remove every row owned by uid (the users row itself is deleted by app/auth.py; FKs cascade anyway)."""
+    with tx() as c:
+        for t in m.USER_DATA_TABLES:
+            c.execute(delete(t).where(t.c.user_id == uid))
 
 
 def reset_all() -> None:
-    """Drop everything (used by seed --reset)."""
-    global _initialized
-    with _init_lock:
-        for p in (config.DB_PATH, config.DB_PATH.with_suffix(".db-wal"), config.DB_PATH.with_suffix(".db-shm")):
-            if p.exists():
-                p.unlink()
-        _initialized = False
-    init_db()
+    """Drop the current user's closet data (used by seed --reset)."""
+    delete_all_user_data(current_user_id())

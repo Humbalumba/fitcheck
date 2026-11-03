@@ -7,11 +7,19 @@ const BACKEND_URL = (process.env.BACKEND_URL || "http://localhost:8000").replace
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  // Docker image: self-contained server (frontend/Dockerfile sets NEXT_OUTPUT=standalone)
+  ...(process.env.NEXT_OUTPUT === "standalone" ? { output: "standalone" as const } : {}),
   async rewrites() {
-    return [
-      { source: "/api/:path*", destination: `${BACKEND_URL}/api/:path*` },
-      { source: "/media/:path*", destination: `${BACKEND_URL}/media/:path*` },
-    ];
+    // "fallback": checked only after every page/route (incl. dynamic ones like /api/auth/[...nextauth]), so the
+    // Auth.js routes stay in Next and everything else under /api and /media goes to the backend.
+    return {
+      beforeFiles: [],
+      afterFiles: [],
+      fallback: [
+        { source: "/api/:path*", destination: `${BACKEND_URL}/api/:path*` },
+        { source: "/media/:path*", destination: `${BACKEND_URL}/media/:path*` },
+      ],
+    };
   },
   // Detection/evaluation can take a while (Gemini + cutouts)
   experimental: {

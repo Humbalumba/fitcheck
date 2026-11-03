@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import io
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -24,7 +23,7 @@ try:  # iPhone HEIC uploads
 except Exception:  # pragma: no cover
     pass
 
-_executor = ThreadPoolExecutor(max_workers=config.GEMINI_MAX_PARALLEL)
+_executor = db.CtxExecutor(max_workers=config.GEMINI_MAX_PARALLEL)
 
 
 def item_to_api(it: dict) -> dict:
@@ -82,7 +81,7 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
     img = load_image(data)
     W, H = img.size
     stem = db.new_id("")
-    orig_path = config.MEDIA_DIR / "originals" / f"{stem}.jpg"
+    orig_path = config.user_media_dir("originals") / f"{stem}.jpg"
     img.save(orig_path, quality=90)
     photo_id = db.insert_photo(str(orig_path), purpose, W, H, source)
 
@@ -128,10 +127,10 @@ def detect(data: bytes, purpose: str | None = None, source: str = "upload") -> d
         rgba, white, seg_info = segment_crop(crop, hint, inner=inner, exclude=exclude)
         base = f"{stem}_{n}"
         paths = {
-            "crop": config.MEDIA_DIR / "crops" / f"{base}.jpg",
-            "cutout": config.MEDIA_DIR / "cutouts" / f"{base}.png",
-            "white": config.MEDIA_DIR / "white" / f"{base}.jpg",
-            "context": config.MEDIA_DIR / "context" / f"{base}.jpg",
+            "crop": config.user_media_dir("crops") / f"{base}.jpg",
+            "cutout": config.user_media_dir("cutouts") / f"{base}.png",
+            "white": config.user_media_dir("white") / f"{base}.jpg",
+            "context": config.user_media_dir("context") / f"{base}.jpg",
         }
         crop.save(paths["crop"], quality=90)
         rgba.save(paths["cutout"])
@@ -209,8 +208,7 @@ def update_attributes(item_id: str, partial: dict) -> dict:
         check_not_accessory(a)  # e.g. PATCH category='accessory' / subcategory='tote bag' -> 422
     db.update_item(item_id, attributes=a, category=a.get("category"))
     # text-dependent compat embedding + cached scores are stale now
-    with db.get_conn() as c:
-        c.execute("DELETE FROM item_embeddings WHERE item_id=? AND kind=?", (item_id, COMPAT_KIND))
+    db.delete_embeddings(item_id, [COMPAT_KIND])
     db.invalidate_compat(item_id)
     it = db.get_item(item_id)
     if it["status"] == "closet":

@@ -22,35 +22,13 @@ from .garment_schema import BATCH_PROMPT, BatchDetails
 
 log = logging.getLogger("fitcheck.render_template")
 
-# ------------------------------------------------------------------ details storage
-_DETAILS_SQL = """
-CREATE TABLE IF NOT EXISTS item_render_details (
-    item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    details TEXT NOT NULL,
-    frame TEXT NOT NULL,        -- 'crop' (boxes relative to the item crop) | 'photo' (relative to the whole photo)
-    model TEXT,
-    created_at TEXT NOT NULL
-);
-"""
-_ready: set[str] = set()
-
-
-def _ensure() -> None:
-    k = str(config.DB_PATH)
-    if k not in _ready:
-        with db.get_conn() as c:
-            c.executescript(_DETAILS_SQL)
-        _ready.add(k)
-
-
+# ------------------------------------------------------------------ details storage (item_render_details, per user)
 def get_details(item: dict) -> tuple[dict | None, str | None]:
     """(details, frame). Stored batch details win; else details that came with the detection call."""
     try:
-        _ensure()
-        with db.get_conn() as c:
-            row = c.execute("SELECT details, frame FROM item_render_details WHERE item_id=?", (item["id"],)).fetchone()
+        row = db.details_get(item["id"])
         if row:
-            return json.loads(row["details"]), row["frame"]
+            return row
     except Exception as e:
         log.warning("details lookup failed: %s", e)
     d = (item.get("attributes") or {}).get("details")
@@ -60,16 +38,11 @@ def get_details(item: dict) -> tuple[dict | None, str | None]:
 
 
 def save_details(item_id: str, details: dict, frame: str, model: str | None = None) -> None:
-    _ensure()
-    with db.get_conn() as c:
-        c.execute("INSERT OR REPLACE INTO item_render_details(item_id, details, frame, model, created_at) "
-                  "VALUES (?,?,?,?,?)", (item_id, json.dumps(details), frame, model, db.now_iso()))
+    db.details_save(item_id, details, frame, model)
 
 
 def forget_details(item_id: str) -> None:
-    _ensure()
-    with db.get_conn() as c:
-        c.execute("DELETE FROM item_render_details WHERE item_id=?", (item_id,))
+    db.details_delete(item_id)
 
 
 def fetch_details(items: list[dict], force: bool = False) -> dict[str, dict]:
@@ -439,8 +412,7 @@ def graphic_box_px(g: dict, frame: str | None, item: dict, crop_size: tuple[int,
     if frame == "photo":
         try:
             from .pipeline import _box_px
-            with db.get_conn() as c:
-                row = c.execute("SELECT width, height FROM photos WHERE id=?", (item.get("photo_id"),)).fetchone()
+            row = db.get_photo(item.get("photo_id"))
             W, H = int(row["width"]), int(row["height"])
             bx0, by0, bx1, by1 = _box_px(item["bbox"], W, H, config.CROP_PAD_FRAC)
             X0, X1 = x0 / 1000 * W - bx0, x1 / 1000 * W - bx0

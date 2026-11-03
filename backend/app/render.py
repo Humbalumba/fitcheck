@@ -70,66 +70,26 @@ CLEAN_SUBDIR = "clean"
 
 
 def clean_dir() -> Path:
-    d = config.MEDIA_DIR / CLEAN_SUBDIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return config.user_media_dir(CLEAN_SUBDIR)
 
 
 def _state_path() -> Path:
     return Path(os.environ.get("RENDER_STATE_PATH", config.DATA_DIR / "render_state.json"))
 
 
-# ------------------------------------------------------------------ storage
-_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS item_renders (
-    item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    status TEXT NOT NULL,          -- pending | done | failed
-    method TEXT,                   -- gemini | cleanup
-    clean_path TEXT,
-    model TEXT,
-    checks TEXT,
-    embed_source TEXT,             -- clean | cutout
-    error TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-"""
-_tables_ready: set[str] = set()
-_cache: dict[str, dict[str, dict]] = {}  # db path -> item_id -> record (this process is the only writer)
+# ------------------------------------------------------------------ storage (item_renders table, per user)
+_cache: dict[str, tuple[float, dict[str, dict]]] = {}  # user id -> (loaded_at, item_id -> record)
 _cache_lock = threading.RLock()
-
-
-def _dbkey() -> str:
-    return str(config.DB_PATH)
-
-
-def _ensure_table() -> None:
-    k = _dbkey()
-    if k in _tables_ready:
-        return
-    with db.get_conn() as c:
-        c.executescript(_TABLE_SQL)
-    _tables_ready.add(k)
-
-
-def _row(r) -> dict:
-    d = dict(r)
-    try:
-        d["checks"] = json.loads(d.get("checks") or "null")
-    except Exception:
-        d["checks"] = None
-    return d
+CACHE_TTL_S = float(os.environ.get("RENDER_CACHE_TTL_S", "5"))  # other instances may write too
 
 
 def _all_records() -> dict[str, dict]:
-    k = _dbkey()
+    uid = db.current_user_id()
     with _cache_lock:
-        if k not in _cache:
-            _ensure_table()
-            with db.get_conn() as c:
-                rows = c.execute("SELECT * FROM item_renders").fetchall()
-            _cache[k] = {r["item_id"]: _row(r) for r in rows}
-        return _cache[k]
+        hit = _cache.get(uid)
+        if hit is None or time.time() - hit[0] > CACHE_TTL_S:
+            hit = _cache[uid] = (time.time(), db.render_records())
+        return hit[1]
 
 
 def get_render(item_id: str) -> dict | None:
@@ -141,20 +101,13 @@ def get_render(item_id: str) -> dict | None:
 
 
 def _save(item_id: str, **fields) -> dict:
-    _ensure_table()
     now = db.now_iso()
     with _cache_lock:
         cur = dict(_all_records().get(item_id) or {"item_id": item_id, "created_at": now})
         cur.update(fields)
         cur["updated_at"] = now
-        with db.get_conn() as c:
-            if c.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone() is None:
-                return cur  # item deleted meanwhile
-            c.execute("""INSERT OR REPLACE INTO item_renders(item_id,status,method,clean_path,model,checks,embed_source,
-                         error,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                      (item_id, cur.get("status") or "pending", cur.get("method"), cur.get("clean_path"),
-                       cur.get("model"), json.dumps(cur.get("checks")), cur.get("embed_source"), cur.get("error"),
-                       cur["created_at"], cur["updated_at"]))
+        if not db.render_upsert(cur):
+            return cur  # item deleted meanwhile
         _all_records()[item_id] = cur
         return cur
 
@@ -169,8 +122,7 @@ def forget(item_id: str) -> None:
             Path(rec["clean_path"]).unlink(missing_ok=True)
         with _cache_lock:
             _all_records().pop(item_id, None)
-            with db.get_conn() as c:
-                c.execute("DELETE FROM item_renders WHERE item_id=?", (item_id,))
+            db.render_delete(item_id)
         from .render_template import forget_details
         forget_details(item_id)
     except Exception as e:
@@ -888,7 +840,7 @@ def _try_gemini(item: dict, cutout_white: Image.Image, crop: Image.Image | None,
 # ------------------------------------------------------------------ orchestration
 # ONE worker thread = a strict FIFO queue: renders run one at a time in the order they were scheduled, and each
 # item's record flips to 'done' (and is persisted) as soon as its own image is saved.
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="render")
+_executor = db.CtxExecutor(max_workers=1, thread_name_prefix="render")  # keeps the caller's user context
 _inflight: set[str] = set()
 _queued: set[str] = set()   # scheduled but not started yet (re-scheduling one of these is a no-op)
 _queue_lock = threading.Lock()
@@ -909,8 +861,7 @@ def _refresh_embeddings(item_id: str) -> bool:
     try:
         from .scoring import COMPAT_KIND, ensure_compat_embeddings
         from .vectors import FCLIP_KIND, closet_index, ensure_fclip
-        with db.get_conn() as c:
-            c.execute("DELETE FROM item_embeddings WHERE item_id=? AND kind IN (?,?)", (item_id, FCLIP_KIND, COMPAT_KIND))
+        db.delete_embeddings(item_id, [FCLIP_KIND, COMPAT_KIND])
         db.invalidate_compat(item_id)
         it = db.get_item(item_id)
         if it is None:
@@ -1010,8 +961,8 @@ def _safe_render(item_id: str, mode: str) -> None:
         except Exception:
             pass
     finally:
-        from . import persist
-        persist.save(f"render {item_id}")  # background DB/media write (no-op unless persisting to Blob)
+        from . import media_store
+        media_store.sync_current(f"render {item_id}")  # upload the new clean image (no-op unless Blob is on)
 
 
 def render_now(item_id: str, mode: str = "auto") -> dict | None:

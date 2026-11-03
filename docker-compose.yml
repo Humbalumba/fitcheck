@@ -1,0 +1,71 @@
+# FitCheck: postgres + minio (photos) + backend (FastAPI) + frontend (Next.js). All config comes from .env
+# (copy .env.example, or run `python3 deploy/init_env.py`). Only the frontend is published; put TLS in front of it
+# (Cloudflare tunnel, a PaaS load balancer, or Caddy/nginx on a VM).
+#   docker compose up -d --build
+# On this box (no iptables for container NAT) add the host-network override:
+#   docker compose -f docker-compose.yml -f docker-compose.box.yml up -d --build
+name: fitcheck
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  MEDIA_STORE: s3
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: ${S3_BUCKET}
+  S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+  S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+  S3_FORCE_PATH_STYLE: "1"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:  # MinIO server (official images are no longer on Docker Hub; Chainguard publishes a free one)
+    image: cgr.dev/chainguard/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes: [miniodata:/data]
+
+  backend:
+    build: {context: ./backend}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+      - path: backend/.env   # GEMINI_API_KEY etc. (optional, uncommitted)
+        required: false
+    environment: *backend-env
+    volumes:
+      - ./backend/models:/app/models:ro   # model weights (see docs/DEPLOY.md)
+      - backend-data:/data                # local media cache + render state
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_started}   # the backend creates the private bucket and retries until ready
+
+  frontend:
+    build:
+      context: ./frontend
+      args: {BACKEND_URL: "${FRONTEND_BACKEND_URL:-http://backend:8000}"}
+    restart: unless-stopped
+    env_file: [{path: .env}]
+    environment:
+      BACKEND_URL: ${FRONTEND_BACKEND_URL:-http://backend:8000}
+    ports: ["${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_PORT:-3000}:3000"]
+    depends_on: [backend]
+
+volumes:
+  pgdata:
+  miniodata:
+  backend-data:

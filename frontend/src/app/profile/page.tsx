@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useId, useState } from "react";
-import { Target, Sparkles, Copy, RotateCcw, Scale, Shirt, ChevronDown } from "lucide-react";
-import { api } from "@/lib/api";
+import { Target, Sparkles, Copy, RotateCcw, Scale, Shirt, ChevronDown, UserRound } from "lucide-react";
+import { signOut } from "next-auth/react";
+import { api, clearApiToken } from "@/lib/api";
 import type { Settings } from "@/lib/types";
 import { OCCASION_SUGGESTIONS } from "@/lib/constants";
 import { cn, titleCase } from "@/lib/format";
@@ -55,6 +56,11 @@ export default function ProfilePage() {
   const [s, setS] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [me, setMe] = useState<Awaited<ReturnType<typeof api.me>> | null>(null);
+  useEffect(() => {
+    api.me().then(setMe).catch(() => {});
+  }, []);
+  const hi = me ? `Hi ${me.first_name || "there"}!` : "Hi!";
 
   const load = useCallback(async () => {
     setError(null);
@@ -100,14 +106,14 @@ export default function ProfilePage() {
   if (error)
     return (
       <div className={COLUMN}>
-        <PageTitle title="Hi Buzz!" />
+        <PageTitle title={hi} />
         <ErrorBanner message={error} onRetry={load} />
       </div>
     );
   if (!s)
     return (
       <div className={COLUMN}>
-        <PageTitle title="Hi Buzz!" />
+        <PageTitle title={hi} />
         <div className="space-y-3" aria-busy>
           {[0, 1, 2].map((i) => (
             <Card key={i} className="p-4 flex items-center gap-3">
@@ -139,7 +145,7 @@ export default function ProfilePage() {
 
   return (
     <div className={cn(COLUMN, "space-y-3")}>
-      <PageTitle title="Hi Buzz!" subtitle="Your goals, your outfit taste, and how FitCheck decides." />
+      <PageTitle title={hi} subtitle="Your goals, your outfit taste, and how FitCheck decides." />
 
       <ExpandRow icon={<Target className="size-4" />} title="Goals" summary={goalsSummary} defaultOpen testId="row-goals">
         <div className="space-y-5">
@@ -268,7 +274,84 @@ export default function ProfilePage() {
           </Button>
         </div>
       </div>
+
+      <AccountRow me={me} />
     </div>
+  );
+}
+
+/** Account: who is signed in, sign out, delete the account (and every item / photo in it). */
+function AccountRow({ me }: { me: Awaited<ReturnType<typeof api.me>> | null }) {
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [password, setPassword] = useState("");
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const doSignOut = async () => {
+    clearApiToken();
+    await signOut({ redirectTo: "/login" });
+  };
+  const doDelete = async () => {
+    setBusy(true);
+    try {
+      await api.deleteAccount(password);
+      clearApiToken();
+      await signOut({ redirectTo: "/login" });
+    } catch (e) {
+      toast((e as Error).message, "error");
+      setBusy(false);
+    }
+  };
+  return (
+    <ExpandRow icon={<UserRound className="size-4" />} title="Account" summary={me?.email ?? "Signed in"} testId="row-account">
+      <div className="space-y-4">
+        <div className="text-sm text-black/65">
+          Signed in as <b className="text-ink">{me?.email ?? "…"}</b>
+          {me?.providers?.includes("google") ? " with Google" : ""}.
+        </div>
+        <Button variant="secondary" onClick={doSignOut}>
+          Sign out
+        </Button>
+        {!confirming ? (
+          <div>
+            <Button variant="danger" onClick={() => setConfirming(true)}>
+              Delete account
+            </Button>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50/60 p-4 space-y-3">
+            <div className="text-sm text-rose-900">
+              This permanently deletes your account, your closet, your evaluations and all your photos. It can&apos;t be undone.
+            </div>
+            {me?.has_password && (
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Your password"
+                autoComplete="current-password"
+                className="w-full h-11 rounded-xl border border-black/10 bg-white px-3 text-[15px] outline-none focus:border-rose-400"
+              />
+            )}
+            <input
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder="Type DELETE to confirm"
+              className="w-full h-11 rounded-xl border border-black/10 bg-white px-3 text-[15px] outline-none focus:border-rose-400"
+            />
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => setConfirming(false)} disabled={busy}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={doDelete} loading={busy}
+                disabled={typed !== "DELETE" || (Boolean(me?.has_password) && !password)}>
+                Delete forever
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </ExpandRow>
   );
 }
 

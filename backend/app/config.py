@@ -61,17 +61,29 @@ CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes"]
 
 for d in (DATA_DIR, MEDIA_DIR, TEST_IMAGES_DIR, MODELS_DIR):
     d.mkdir(parents=True, exist_ok=True)
-for sub in ("originals", "crops", "cutouts", "white", "context", "suggest"):
-    (MEDIA_DIR / sub).mkdir(parents=True, exist_ok=True)
+
+
+def user_media_dir(sub: str) -> Path:
+    """Per-user media folder for the CURRENT user: MEDIA_DIR/u/<user_id>/<sub> (created on demand)."""
+    from .db import current_user_id
+    d = MEDIA_DIR / "u" / current_user_id() / sub
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def media_url(path: str | Path | None) -> str | None:
-    """Absolute filesystem path under MEDIA_DIR -> '/media/...' URL."""
+    """Absolute filesystem path under MEDIA_DIR/u/<user>/ -> signed '/media/u/<user>/...?exp=..&sig=..' URL.
+    The signature (app/media_store.py) is the only way to read a file; anything outside u/ is never served."""
     if not path:
         return None
     p = Path(path)
+    if not p.is_absolute():
+        p = MEDIA_DIR / p
     try:
-        rel = p.resolve().relative_to(MEDIA_DIR.resolve())
+        rel = p.resolve().relative_to(MEDIA_DIR.resolve()).as_posix()
     except ValueError:
         return None
-    return "/media/" + rel.as_posix()
+    if not rel.startswith("u/"):
+        return None
+    from .media_store import signed_path
+    return signed_path(rel)

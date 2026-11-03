@@ -1,4 +1,8 @@
-"""FitCheck API (FastAPI). See /workspace/fitcheck/API.md for the contract."""
+"""FitCheck API (FastAPI). See /workspace/fitcheck/API.md for the contract.
+
+Every /api route except /api/health, /api/account/* (public sign-up / verify / reset flows) and /api/internal/* (Auth.js
+server calls, shared secret) requires a verified Bearer token (app/auth.py) and only sees that user's data.
+"""
 from __future__ import annotations
 
 import logging
@@ -6,65 +10,84 @@ import os
 import threading
 from typing import Any, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from . import config, db, gemini, persist, pipeline, product_link, suggest, wardrobe_suggest
+from . import auth, config, db, gemini, media_store, pipeline, product_link, suggest, wardrobe_suggest
 from .evaluate import evaluate as run_evaluate, sustainability_for, with_current_verdict, with_sustainability
 from .scoring import get_scorer, scorer_kind
-from .vectors import closet_index
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("fitcheck")
 
-app = FastAPI(title="FitCheck API", version="1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_origin_regex=".*",  # dev: any origin
-    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
+app = FastAPI(title="FitCheck API", version="2.0")
+# Auth is a Bearer header (not a cookie), so CORS is not what protects the data; still only allow our own sites.
+_origins = [o.strip().rstrip("/") for o in os.environ.get(
+    "ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=False,
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                   allow_headers=["Authorization", "Content-Type"])
+api = APIRouter(dependencies=[Depends(auth.require_user)])   # every user-data route
 
 
 @app.middleware("http")
-async def _persist_after_write(request: Request, call_next):
-    """On Vercel (app/persist.py): after a successful mutating /api request, save the state to Blob BEFORE
-    responding (the instance may be frozen right after the response). No-op locally; never fails the request."""
+async def _security_and_media_sync(request: Request, call_next):
+    """Security headers; with a durable media store (MEDIA_STORE=s3|blob) upload the user's new media BEFORE
+    responding to a successful write, so another instance / a restarted container always finds it. Never fails."""
     response = await call_next(request)
-    if (request.method in ("POST", "PUT", "PATCH", "DELETE") and request.url.path.startswith("/api/")
-            and response.status_code < 400 and persist.enabled()):
-        await run_in_threadpool(persist.save, f"{request.method} {request.url.path}")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    uid = getattr(request.state, "user_id", None)
+    if (uid and request.method in ("POST", "PUT", "PATCH", "DELETE") and response.status_code < 400
+            and media_store.enabled()):
+        await run_in_threadpool(media_store.sync_user, uid, f"{request.method} {request.url.path}")
     return response
 
 
-app.mount("/media", StaticFiles(directory=str(config.MEDIA_DIR)), name="media")
+@app.get("/media/{rel:path}")
+def media(rel: str, exp: Optional[str] = None, sig: Optional[str] = None):
+    """User media. Only signed URLs (issued in API responses to the owner) are served; see app/media_store.py."""
+    if not media_store.verify(rel, exp, sig):
+        raise HTTPException(404, "not found")
+    url = media_store.presigned_url(rel)  # MEDIA_S3_PRESIGN=1: let the bucket serve it (short-lived URL)
+    if url:
+        return RedirectResponse(url, status_code=302, headers={"Cache-Control": "private, max-age=240"})
+    p = media_store.local_file(rel)
+    if p is None:
+        raise HTTPException(404, "not found")
+    return FileResponse(p, headers={"Cache-Control": "private, max-age=21600"})
 
 
 def _warmup():
     try:
-        db.init_db()
-        closet_index.load_or_rebuild()  # loads fashion-clip
         get_scorer()
-        from .models_runtime import get_segformer
+        from .models_runtime import get_fashion_clip, get_segformer
+        get_fashion_clip()
         get_segformer()
         if gemini.is_configured():
             gemini.model_name()
         log.info("Warmup complete (scorer=%s, gemini=%s)", scorer_kind(), gemini.is_configured())
-        wardrobe_suggest.warm()  # "Worth a look" picks for the current closet, in the background if not cached
     except Exception:
         log.exception("Warmup failed")
 
 
 @app.on_event("startup")
 def _startup():
-    db.init_db()
-    threading.Thread(target=_warmup, daemon=True).start()
-    from .pricing import start_background_backfill
-    start_background_backfill()  # price estimates for old unpriced items (1 batched Gemini text call, else table)
+    db.init_db()  # alembic upgrade head (advisory-locked on Postgres)
+    media_store.ensure_ready()  # S3/MinIO bucket
+    if os.environ.get("FITCHECK_WARMUP", "1") != "0":
+        threading.Thread(target=_warmup, daemon=True).start()
+
+
+app.include_router(auth.public)
+app.include_router(auth.internal)
+app.include_router(auth.account)
 
 
 # ------------------------------------------------------------------ models
@@ -113,8 +136,7 @@ def health():
             "gemini_model": gemini._model_name or (config.GEMINI_MODEL if config.GEMINI_MODEL != "auto" else None),
             "gemini_mode": config.GEMINI_MODE,
             "gemini_exhausted": sorted(n for n in gemini._exhausted if not gemini._available(n)),
-            "render": _render_status(),
-            "closet_size": len(db.list_items(status="closet"))}
+            "render": _render_status()}
 
 
 def _render_status() -> dict | None:
@@ -128,7 +150,7 @@ def _render_status() -> dict | None:
         return None
 
 
-@app.post("/api/detect")
+@api.post("/api/detect")
 def detect(file: UploadFile = File(...), purpose: Optional[str] = Form(None)):
     if purpose not in (None, "", "closet", "candidate"):
         raise HTTPException(422, "purpose must be 'closet' or 'candidate'")
@@ -142,7 +164,7 @@ def detect(file: UploadFile = File(...), purpose: Optional[str] = Form(None)):
         raise HTTPException(500, f"detection failed: {type(e).__name__}: {e}")
 
 
-@app.post("/api/detect-url")
+@api.post("/api/detect-url")
 def detect_url(body: DetectUrlBody):
     """Like /api/detect, but from a pasted product link: fetch the page, take its product photo (plus title / brand /
     price / color / description when available) and run the same detection pipeline (app/product_link.py)."""
@@ -157,7 +179,7 @@ def detect_url(body: DetectUrlBody):
         raise HTTPException(500, f"detection failed: {type(e).__name__}: {e}")
 
 
-@app.post("/api/closet/items")
+@api.post("/api/closet/items")
 def add_closet_items(body: AddItemsBody):
     for iid in body.item_ids:
         _item_or_404(iid)
@@ -169,12 +191,12 @@ def add_closet_items(body: AddItemsBody):
     return {"items": [pipeline.item_to_api(i) for i in items]}
 
 
-@app.get("/api/closet/items")
+@api.get("/api/closet/items")
 def list_closet(category: Optional[str] = None):
     return {"items": [pipeline.item_to_api(i) for i in db.list_items(status="closet", category=category or None)]}
 
 
-@app.patch("/api/closet/items/{item_id}")
+@api.patch("/api/closet/items/{item_id}")
 def patch_item(item_id: str, body: PatchBody):
     _item_or_404(item_id)
     try:  # category can't become 'accessory' (or anything outside top/bottom/dress/outerwear/shoes)
@@ -185,7 +207,7 @@ def patch_item(item_id: str, body: PatchBody):
         raise HTTPException(422, str(e))
 
 
-@app.delete("/api/closet/items/{item_id}")
+@api.delete("/api/closet/items/{item_id}")
 def delete_item(item_id: str):
     _item_or_404(item_id)
     pipeline.delete_item(item_id)
@@ -193,7 +215,7 @@ def delete_item(item_id: str):
     return {"ok": True}
 
 
-@app.get("/api/items/{item_id}")
+@api.get("/api/items/{item_id}")
 def get_item(item_id: str):
     return pipeline.item_to_api(_item_or_404(item_id))
 
@@ -209,7 +231,7 @@ def _render_mode(mode: str) -> str:
     return mode
 
 
-@app.post("/api/items/{item_id}/render")
+@api.post("/api/items/{item_id}/render")
 def render_item(item_id: str, body: Optional[RenderBody] = None):
     """(Re-)create the item's clean product image (app/render.py). Background by default: the response has
     render_status='pending'; poll GET /api/items/{id} until it is 'done' (clean_image_url set) or 'failed'."""
@@ -228,7 +250,7 @@ def render_item(item_id: str, body: Optional[RenderBody] = None):
     return pipeline.item_to_api(_item_or_404(item_id))
 
 
-@app.post("/api/closet/render")
+@api.post("/api/closet/render")
 def render_closet(body: Optional[RenderBody] = None, only_missing: bool = False):
     """Queue clean-image renders for every closet item (only_missing=true: items without a clean image yet)."""
     from . import render
@@ -239,7 +261,7 @@ def render_closet(body: Optional[RenderBody] = None, only_missing: bool = False)
     return {"queued": ids}
 
 
-@app.post("/api/evaluate")
+@api.post("/api/evaluate")
 def evaluate(body: EvaluateBody):
     _item_or_404(body.item_id)
     if body.price is not None and body.price < 0:
@@ -249,7 +271,7 @@ def evaluate(body: EvaluateBody):
     return res
 
 
-@app.get("/api/evaluations/{evaluation_id}")
+@api.get("/api/evaluations/{evaluation_id}")
 def get_evaluation(evaluation_id: str):
     """A saved evaluation (same shape as POST /api/evaluate). Evaluations saved before the sustainability score or
     the BUY / CONSIDER / SKIP score existed get them computed on read (pure Python, no model calls)."""
@@ -261,7 +283,7 @@ def get_evaluation(evaluation_id: str):
     return {**res, "evaluation_id": evaluation_id, "created_at": ev.get("created_at")}
 
 
-@app.get("/api/items/{item_id}/sustainability")
+@api.get("/api/items/{item_id}/sustainability")
 def item_sustainability(item_id: str):
     """Sustainability from the item's latest saved evaluation (e.g. a closet item bought via "Should I buy?").
     The stats (new outfits, redundancy) are as of that evaluation. 404 if the item was never evaluated."""
@@ -280,7 +302,7 @@ def item_sustainability(item_id: str):
             "n_new_outfits_at_evaluation": ev["results"].get("total_new_outfits")}
 
 
-@app.post("/api/evaluations/{evaluation_id}/suggestions")
+@api.post("/api/evaluations/{evaluation_id}/suggestions")
 def evaluation_suggestions(evaluation_id: str, refresh: bool = False):
     """Live-shopping suggestions for an evaluation (SKIP -> better alternatives, BUY -> pairings). One grounded
     Gemini call, cached per evaluation (refresh=true recomputes)."""
@@ -295,7 +317,7 @@ def evaluation_suggestions(evaluation_id: str, refresh: bool = False):
         raise HTTPException(500, f"suggestions failed: {type(e).__name__}: {e}")
 
 
-@app.get("/api/evaluations/{evaluation_id}/suggestions")
+@api.get("/api/evaluations/{evaluation_id}/suggestions")
 def get_evaluation_suggestions(evaluation_id: str):
     cached = db.get_suggestions(evaluation_id)
     if cached is None:
@@ -303,7 +325,7 @@ def get_evaluation_suggestions(evaluation_id: str):
     return {**suggest.add_sustainability(cached), "cached": True}
 
 
-@app.get("/api/suggestions/wardrobe")
+@api.get("/api/suggestions/wardrobe")
 def wardrobe_suggestions(refresh: bool = False, wait: float = 0.0):
     """"Worth a look": 3-5 real products that fill gaps in the current closet (app/wardrobe_suggest.py).
     Never blocks by default: status 'ready' (cached per closet contents), 'pending' (live search running in the
@@ -317,7 +339,7 @@ def wardrobe_suggestions(refresh: bool = False, wait: float = 0.0):
                 "detail": f"{type(e).__name__}: {e}"}
 
 
-@app.post("/api/candidate/{item_id}/add-to-closet")
+@api.post("/api/candidate/{item_id}/add-to-closet")
 def candidate_to_closet(item_id: str):
     _item_or_404(item_id)
     try:
@@ -328,15 +350,18 @@ def candidate_to_closet(item_id: str):
         raise HTTPException(422, str(e))
 
 
-@app.get("/api/settings")
+@api.get("/api/settings")
 def get_settings():
     return db.get_settings()
 
 
-@app.put("/api/settings")
+@api.put("/api/settings")
 def put_settings(body: SettingsBody):
     # exclude_unset: only fields the client sent (unknown / retired keys are ignored by the model)
     partial = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     out = db.update_settings(partial)
     wardrobe_suggest.closet_changed()
     return out
+
+
+app.include_router(api)

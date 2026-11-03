@@ -1,52 +1,22 @@
-"""Vercel entrypoint shim (backend service). Does not modify backend/app.
+"""Vercel entrypoint shim (backend service).
 
-Vercel's deployment filesystem is read-only except /tmp, so on the first import in each
-function instance we copy the bundled seed snapshot (seed_data/: SQLite DB, FAISS index, media)
-into /tmp/fitcheck and point app/config.py at it via FITCHECK_DATA_DIR - unless app/persist.py finds a saved
-state in Vercel Blob (BLOB_READ_WRITE_TOKEN), in which case that is restored instead. Every successful write is
-saved back to Blob (middleware in app/main.py), so the closet survives cold starts.
+All user data lives in Postgres (DATABASE_URL, e.g. Neon via the Vercel integration); media files live under
+/tmp/fitcheck/media/u/<user>/ as a per-instance cache and in Vercel Blob (app/media_store.py). The old single-user
+SQLite snapshot persistence (app/persist.py, last-write-wins) is retired. Schema migrations (Alembic) run on the
+first import of each instance, serialized by a Postgres advisory lock.
 Model weights are fetched into backend/models at build time by vercel_build.py.
 """
 import os
-import shutil
 import time
 from pathlib import Path
 
 _t0 = time.time()
 HERE = Path(__file__).resolve().parent
-SEED = HERE / "seed_data"
 RUN = Path(os.environ.get("FITCHECK_DATA_DIR", "/tmp/fitcheck"))
-USER_TABLES = ("outfit_items", "outfits", "compat_edges", "item_embeddings", "item_render_details", "item_renders",
-               "suggestions", "wardrobe_suggestions", "evaluations", "items", "photos")
-
-
-def _start_empty(run: Path) -> None:
-    """Fresh instance = empty closet (keeps only the saved settings / profile). FITCHECK_START_EMPTY=0 keeps the seed."""
-    import sqlite3
-    c = sqlite3.connect(run / "fitcheck.db")
-    c.execute("PRAGMA foreign_keys=OFF")
-    for t in USER_TABLES:
-        try:
-            c.execute(f"DELETE FROM {t}")
-        except sqlite3.OperationalError:
-            pass
-    c.commit()
-    c.close()
-    for f in run.glob("closet.*"):
-        f.unlink()
-    shutil.rmtree(run / "media", ignore_errors=True)
-    (run / "media").mkdir(exist_ok=True)
-
-
+RUN.mkdir(parents=True, exist_ok=True)
 os.environ["FITCHECK_DATA_DIR"] = str(RUN)
-_restored = False
-if not (RUN / "fitcheck.db").exists():
-    from app import persist  # stdlib only; no-op unless BLOB_READ_WRITE_TOKEN is set (app/persist.py)
-    _restored = persist.restore(RUN)  # the closet saved by earlier instances, if any
-    if not _restored and SEED.exists():
-        shutil.copytree(SEED, RUN, dirs_exist_ok=True)
-        if os.environ.get("FITCHECK_START_EMPTY", "1") != "0":
-            _start_empty(RUN)
+if not (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")):
+    raise RuntimeError("DATABASE_URL is not set: connect the Neon Postgres database to this project")
 os.environ.setdefault("HF_HOME", str(HERE / "models" / "hf"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")          # never try to refresh the read-only HF cache
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -54,6 +24,8 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("TORCH_THREADS", "1")           # Hobby = 1 vCPU
 os.environ.setdefault("FITCHECK_COMPAT_MODEL_DIR", str(HERE / "models" / "outfit_transformer"))
 
+from app import db  # noqa: E402
+db.init_db()
 from app.main import app  # noqa: E402,F401
 
-print(f"[vercel_entry] {'restored' if _restored else 'seeded'} {RUN} and imported app in {time.time() - _t0:.1f}s", flush=True)
+print(f"[vercel_entry] migrated + imported app in {time.time() - _t0:.1f}s", flush=True)

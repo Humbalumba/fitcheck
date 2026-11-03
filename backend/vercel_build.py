@@ -8,7 +8,6 @@ Fetches everything that is too big for the 100 MB Hobby CLI upload into the func
       head.safetensors      <- env OT_HEAD_URL (the user's Vercel Blob store)
       clip_vision/clip_text <- sliced out of fashion-clip model.safetensors (the OT checkpoint's
                                frozen towers are bit-identical to fashion-clip; verified locally)
-  * Seed snapshot (DB + FAISS + media) <- env SEED_URL (Vercel Blob tarball), extracted to seed_data/
 """
 import json
 import os
@@ -94,11 +93,7 @@ def main() -> None:
     slice_safetensors(fc, OT / "clip_text.safetensors",
                       lambda k: (k.startswith("text_model.") and not k.endswith("position_ids")) or k == "text_projection.weight")
     fetch(os.environ["OT_HEAD_URL"], OT / "head.safetensors")
-    tgz = HERE / "seed_data.tgz"
-    fetch(os.environ["SEED_URL"], tgz)
-    with tarfile.open(tgz) as t:
-        t.extractall(HERE, filter="data")
-    tgz.unlink()
+    # (the single-user seed snapshot is no longer used: data lives in Postgres per user)
     print(f"vercel_build done in {time.time()-t0:.0f}s", flush=True)
 
 

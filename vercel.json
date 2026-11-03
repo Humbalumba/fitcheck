@@ -12,6 +12,13 @@
     },
     "rewrites": [
         {
+            "source": "/api/auth/(.*)",
+            "destination": {
+                "type": "service",
+                "service": "frontend"
+            }
+        },
+        {
             "source": "/api/(.*)",
             "destination": {
                 "type": "service",

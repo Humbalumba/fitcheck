@@ -67,23 +67,9 @@ class ClosetIndex:
         return faiss.IndexIDMap(faiss.IndexFlatIP(FCLIP_DIM))
 
     def load_or_rebuild(self):
-        import faiss
+        """Built in memory from the embeddings stored in the database (per user; nothing on disk)."""
         with self._lock:
-            items = db.list_items(status="closet")
-            ids = [it["id"] for it in items]
-            path_map = config.FAISS_PATH.with_suffix(".ids.npy")
-            if config.FAISS_PATH.exists() and path_map.exists():
-                try:
-                    idx = faiss.read_index(str(config.FAISS_PATH))
-                    arr = np.load(path_map, allow_pickle=True)
-                    id_map = {int(i): str(s) for i, s in arr}
-                    if sorted(id_map.values()) == sorted(ids) and idx.ntotal == len(ids):
-                        self.index, self.id_map = idx, id_map
-                        log.info("Loaded FAISS index with %d closet items", idx.ntotal)
-                        return
-                except Exception as e:  # corrupt / stale -> rebuild
-                    log.warning("FAISS load failed (%s); rebuilding", e)
-            self.rebuild(items)
+            self.rebuild(db.list_items(status="closet"))
 
     def rebuild(self, items: list[dict] | None = None):
         with self._lock:
@@ -100,11 +86,7 @@ class ClosetIndex:
             log.info("Rebuilt FAISS index with %d closet items", len(vecs))
 
     def save(self):
-        import faiss
-        with self._lock:
-            faiss.write_index(self.index, str(config.FAISS_PATH))
-            np.save(config.FAISS_PATH.with_suffix(".ids.npy"),
-                    np.array(list(self.id_map.items()), dtype=object), allow_pickle=True)
+        """No-op: the index is rebuilt from item_embeddings rows when an instance first needs it."""
 
     def add(self, item: dict):
         with self._lock:
@@ -140,4 +122,45 @@ class ClosetIndex:
             return [(self.id_map[int(i)], float(d)) for d, i in zip(D[0], I[0]) if int(i) in self.id_map]
 
 
-closet_index = ClosetIndex()
+class PerUserIndex:
+    """closet_index facade: one in-memory ClosetIndex per user (picked from the request's user context)."""
+    MAX_USERS = 200
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._by_user: dict[str, ClosetIndex] = {}
+
+    def _get(self) -> ClosetIndex:
+        uid = db.current_user_id()
+        with self._lock:
+            idx = self._by_user.pop(uid, None) or ClosetIndex()
+            self._by_user[uid] = idx  # most recently used last
+            while len(self._by_user) > self.MAX_USERS:
+                self._by_user.pop(next(iter(self._by_user)))
+            return idx
+
+    def forget_user(self, uid: str) -> None:
+        with self._lock:
+            self._by_user.pop(uid, None)
+
+    def load_or_rebuild(self):
+        return self._get().load_or_rebuild()
+
+    def rebuild(self, items=None):
+        return self._get().rebuild(items)
+
+    def add(self, item: dict):
+        return self._get().add(item)
+
+    def remove(self, item_id: str):
+        return self._get().remove(item_id)
+
+    def search(self, vec, k=None):
+        idx = self._get()
+        items = db.list_items(status="closet")  # another serverless instance may have changed this closet
+        if idx.index is None or set(idx.id_map.values()) != {it["id"] for it in items}:
+            idx.rebuild(items)
+        return idx.search(vec, k)
+
+
+closet_index = PerUserIndex()

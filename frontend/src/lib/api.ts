@@ -34,22 +34,69 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+/* ---- backend auth: a 5-minute Bearer token minted from the httpOnly Auth.js session (app/api/auth/token) ---- */
+let apiToken: { token: string; exp: number } | null = null;
+let tokenInflight: Promise<string> | null = null;
+
+function goToLogin() {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname.startsWith("/login")) return;
+  const next = window.location.pathname + window.location.search;
+  // full navigation on purpose: drops all in-memory closet state of the signed-out session
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+}
+
+export function clearApiToken() {
+  apiToken = null;
+}
+
+async function getApiToken(force = false): Promise<string> {
+  const now = Date.now() / 1000;
+  if (!force && apiToken && apiToken.exp - now > 30) return apiToken.token;
+  if (!tokenInflight) {
+    tokenInflight = (async () => {
+      const r = await fetch("/api/auth/token", { cache: "no-store", credentials: "same-origin" });
+      if (r.status === 401) {
+        apiToken = null;
+        goToLogin();
+        throw new ApiError("Please sign in again.", 401);
+      }
+      if (!r.ok) throw new ApiError("Can't reach the FitCheck server.", r.status);
+      const j = (await r.json()) as { token: string; expires_at: number };
+      apiToken = { token: j.token, exp: j.expires_at };
+      return j.token;
+    })().finally(() => {
+      tokenInflight = null;
+    });
+  }
+  return tokenInflight;
+}
+
+async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number; noAuth?: boolean }): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), init?.timeoutMs ?? 180_000);
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      signal: controller.signal,
-      headers: {
-        ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
-        ...(init?.headers || {}),
-      },
-      cache: "no-store",
-    });
+    const send = async (force: boolean) =>
+      fetch(`${API_BASE}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+          ...(init?.noAuth ? {} : { Authorization: `Bearer ${await getApiToken(force)}` }),
+          ...(init?.headers || {}),
+        },
+        cache: "no-store",
+      });
+    res = await send(false);
+    if (res.status === 401 && !init?.noAuth) {
+      res = await send(true); // token expired / revoked: get a fresh one once
+      if (res.status === 401) goToLogin();
+    }
   } catch (e) {
     clearTimeout(timeout);
+    if (e instanceof ApiError) throw e;
     if ((e as Error).name === "AbortError") throw new ApiError("Request timed out", 0);
     throw new ApiError("Can't reach the FitCheck server. Is the backend running?", 0);
   }
@@ -174,6 +221,33 @@ const realApi = {
 
   putSettings: (patch: Partial<Settings>) =>
     request<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
+
+  /** The signed-in user. */
+  me: () =>
+    request<{ id: string; email: string; name: string | null; first_name: string | null; email_verified: boolean;
+      has_password: boolean; providers: string[] }>("/api/me", { timeoutMs: 10_000 }),
+
+  /** Permanently delete the account, closet, evaluations and photos. */
+  deleteAccount: (password: string) =>
+    request<{ ok: boolean }>("/api/account", { method: "DELETE", body: JSON.stringify({ confirm: "DELETE", password }) }),
+};
+
+/** Signed-out account flows (sign up, confirm email, reset password). JSON only (CSRF-safe), rate limited server-side. */
+export const accountApi = {
+  signup: (email: string, password: string, name: string) =>
+    request<{ ok: boolean; message: string; verification_required: boolean }>("/api/account/signup", {
+      method: "POST", noAuth: true, body: JSON.stringify({ email, password, name }) }),
+  verifyEmail: (token: string) =>
+    request<{ ok: boolean }>("/api/account/verify-email", { method: "POST", noAuth: true, body: JSON.stringify({ token }) }),
+  resendVerification: (email: string) =>
+    request<{ ok: boolean; message: string }>("/api/account/resend-verification", {
+      method: "POST", noAuth: true, body: JSON.stringify({ email }) }),
+  forgotPassword: (email: string) =>
+    request<{ ok: boolean; message: string }>("/api/account/forgot-password", {
+      method: "POST", noAuth: true, body: JSON.stringify({ email }) }),
+  resetPassword: (token: string, password: string) =>
+    request<{ ok: boolean }>("/api/account/reset-password", {
+      method: "POST", noAuth: true, body: JSON.stringify({ token, password }) }),
 };
 
 export type Api = typeof realApi;

@@ -12,12 +12,14 @@ const CLOSET: Tab = { href: "/closet", label: "Closet", icon: Shirt, match: ["/c
 const BUY: Tab = { href: "/buy", label: "Should I buy?", icon: ShoppingBag, match: ["/buy"] };
 const PROFILE: Tab = { href: "/profile", label: "Profile", icon: CircleUser, match: ["/profile", "/preferences", "/settings"] };
 
+const AUTH_PAGES = ["/login", "/signup", "/forgot-password", "/reset-password", "/verify-email"];
+
 const isActive = (t: Tab, pathname: string | null) => !!pathname && t.match.some((m) => pathname.startsWith(m));
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  // The landing page is a full-screen intro with no header or nav.
-  if (pathname === "/") return <ToastProvider>{children}</ToastProvider>;
+  // The landing page is a full-screen intro with no header or nav; so are the signed-out auth pages.
+  if (pathname === "/" || AUTH_PAGES.some((p) => pathname?.startsWith(p))) return <ToastProvider>{children}</ToastProvider>;
   return (
     <ToastProvider>
       <div className="min-h-dvh flex flex-col">

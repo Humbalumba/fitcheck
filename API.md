@@ -1,5 +1,7 @@
 # FitCheck API
 
+> Auth: every `/api/*` route below needs `Authorization: Bearer <token>` and only sees the signed-in user's data. See docs/AUTH.md.
+
 Base URL (dev): `http://localhost:8000`. JSON everywhere except `POST /api/detect` (multipart).
 CORS: `http://localhost:3000` plus any origin (dev). Media files are served statically under `/media/...`;
 every `*_url` field is an absolute path like `/media/cutouts/abc.png` — prefix it with the API base.

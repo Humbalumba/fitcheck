@@ -1,0 +1,32 @@
+# Override for this sandbox box: its kernel has no iptables, so Docker can't NAT container traffic. Every service
+# uses the host network and binds to 127.0.0.1 only (the Cloudflare tunnel connects to the frontend on :3000).
+# Not needed on a normal VM / PaaS.
+x-host: &host
+  network_mode: host
+
+services:
+  postgres:
+    <<: *host
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-c", "port=${POSTGRES_HOST_PORT:-5433}"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1 -p ${POSTGRES_HOST_PORT:-5433}"]
+  minio:
+    <<: *host
+    command: ["server", "/data", "--address", "127.0.0.1:9000", "--console-address", "127.0.0.1:9001"]
+  backend:
+    <<: *host
+    build: {context: ./backend, network: host}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-5433}/${POSTGRES_DB}
+      S3_ENDPOINT_URL: http://127.0.0.1:9000
+      HOST: 127.0.0.1
+  frontend:
+    <<: *host
+    build:
+      context: ./frontend
+      network: host
+      args: {BACKEND_URL: "http://127.0.0.1:8000"}
+    environment:
+      BACKEND_URL: http://127.0.0.1:8000
+      HOSTNAME: 127.0.0.1
+    ports: !reset []

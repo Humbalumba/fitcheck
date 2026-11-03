@@ -66,36 +66,26 @@ def closet_key(closet: list[dict], settings: dict) -> str:
     return hashlib.sha1(json.dumps([rows, s], sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
-_DDL = ("CREATE TABLE IF NOT EXISTS wardrobe_suggestions (closet_key TEXT PRIMARY KEY, results TEXT NOT NULL, "
-        "created_at TEXT)")
-
-
 def load_cached(key: str) -> dict | None:
     if key in _mem:
         return _mem[key]
     try:
-        with db.get_conn() as c:
-            c.execute(_DDL)
-            row = c.execute("SELECT results FROM wardrobe_suggestions WHERE closet_key=?", (key,)).fetchone()
+        res = db.wardrobe_get(key)
     except Exception:
         log.exception("wardrobe cache read failed")
         return None
-    if not row:
+    if res is None:
         return None
-    res = json.loads(row["results"])
     _mem[key] = res
     return res
 
 
 def save_cached(key: str, res: dict) -> None:
-    _mem.clear()  # only the current closet matters
+    if len(_mem) > 500:
+        _mem.clear()
     _mem[key] = res
     try:
-        with db.get_conn() as c:
-            c.execute(_DDL)
-            c.execute("DELETE FROM wardrobe_suggestions WHERE closet_key<>?", (key,))
-            c.execute("INSERT OR REPLACE INTO wardrobe_suggestions(closet_key, results, created_at) VALUES (?,?,?)",
-                      (key, json.dumps(res), db.now_iso()))
+        db.wardrobe_put(key, res)
     except Exception:
         log.exception("wardrobe cache write failed")
 
@@ -103,15 +93,11 @@ def save_cached(key: str, res: dict) -> None:
 def cleanup_old_items(keep_eid: str) -> None:
     """Drop suggestion items from previous closet versions (unless an evaluation / outfit still references them)."""
     try:
-        with db.get_conn() as c:
-            rows = c.execute(
-                "SELECT id, crop_path, cutout_path, white_path FROM items WHERE status='suggestion' "
-                "AND json_extract(attributes, '$.suggestion_for') LIKE ? "
-                "AND json_extract(attributes, '$.suggestion_for')<>? "
-                "AND id NOT IN (SELECT candidate_item_id FROM evaluations WHERE candidate_item_id IS NOT NULL) "
-                "AND id NOT IN (SELECT item_id FROM outfit_items)", (EID_PREFIX + "%", keep_eid)).fetchall()
-        for r in rows:
-            suggest.delete_suggestion_items_by_id(dict(r))
+        used = db.referenced_item_ids()
+        for it in db.list_items(status="suggestion"):
+            sf = str((it.get("attributes") or {}).get("suggestion_for") or "")
+            if sf.startswith(EID_PREFIX) and sf != keep_eid and it["id"] not in used:
+                suggest.delete_suggestion_items_by_id(it)
     except Exception:
         log.exception("wardrobe cleanup failed")
 
@@ -610,7 +596,9 @@ def compute(closet: list[dict], settings: dict, key: str, fetcher=None) -> dict:
 def _current() -> tuple[list[dict], dict, str]:
     closet = [c for c in db.list_items(status="closet") if c.get("category") in SUPPORTED]
     settings = db.get_settings()
-    return closet, settings, closet_key(closet, settings)
+    # the user id is part of the key: two users with identical closets/settings never share cache entries or jobs
+    key = hashlib.sha1(f"{db.current_user_id()}|{closet_key(closet, settings)}".encode()).hexdigest()[:16]
+    return closet, settings, key
 
 
 def _run(key: str, closet: list[dict], settings: dict) -> None:
@@ -629,15 +617,15 @@ def _run(key: str, closet: list[dict], settings: dict) -> None:
     finally:
         with _guard:
             _jobs.pop(key, None)
-        from . import persist
-        persist.save("wardrobe suggestions")  # background DB write (no-op unless persisting to Blob)
+        from . import media_store
+        media_store.sync_current("wardrobe suggestions")  # upload product images (no-op unless Blob is on)
 
 
 def start(key: str, closet: list[dict], settings: dict) -> dict:
     with _guard:
         job = _jobs.get(key)
         if job is None:
-            t = threading.Thread(target=_run, args=(key, closet, settings), daemon=True, name=f"wardrobe-{key}")
+            t = threading.Thread(target=db.bind(_run), args=(key, closet, settings), daemon=True, name=f"wardrobe-{key}")
             job = _jobs[key] = {"thread": t, "started": time.time()}
             t.start()
     return job
@@ -666,22 +654,22 @@ def get(refresh: bool = False, wait_s: float = 0.0) -> dict:
             "reason": None, "elapsed_s": round(time.time() - job["started"], 1)}
 
 
-_kick: threading.Timer | None = None
+_kick: dict[str, threading.Timer] = {}  # user id -> pending debounce timer
 KICK_DELAY_S = float(os.environ.get("FITCHECK_WARDROBE_KICK_S", "6"))
 
 
 def closet_changed() -> None:
     """Called after any closet / settings change: start a fresh "Worth a look" search for the new closet in the
     background. Debounced so adding several items in a row runs ONE search (fewer store requests, less blocking)."""
-    global _kick
     if os.environ.get("FITCHECK_WARDROBE_WARM", "1") == "0":
         return
+    uid = db.current_user_id()
     with _guard:
-        if _kick is not None:
-            _kick.cancel()
-        _kick = threading.Timer(KICK_DELAY_S, warm)
-        _kick.daemon = True
-        _kick.start()
+        if uid in _kick:
+            _kick[uid].cancel()
+        t = _kick[uid] = threading.Timer(KICK_DELAY_S, db.bind(warm))
+        t.daemon = True
+        t.start()
 
 
 def warm() -> None:

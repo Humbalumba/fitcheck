@@ -31,7 +31,7 @@ import os
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from .db import CtxExecutor as ThreadPoolExecutor  # keeps the user context in workers
 from pathlib import Path
 from urllib.parse import parse_qsl, urljoin, urlparse
 
@@ -1037,8 +1037,7 @@ def create_suggestion_item(p: dict, cat: str, cand: dict, eid: str) -> dict:
     if strategy == "fallback_crop" or (strategy.startswith("on_model") and (cover < 0.03 or cat == "shoes")):
         raise ValueError("no clean photo of the garment (lifestyle / worn shot)")
     stem = "sg_" + hashlib.sha1(f"{eid}|{p.get('product_url')}|{p['name']}".encode()).hexdigest()[:12]
-    d = config.MEDIA_DIR / "suggest"
-    d.mkdir(parents=True, exist_ok=True)
+    d = config.user_media_dir("suggest")
     paths = {"crop": d / f"{stem}_orig.jpg", "cutout": d / f"{stem}.png", "white": d / f"{stem}.jpg"}
     img.save(paths["crop"], quality=88)
     rgba.save(paths["cutout"])
@@ -1056,9 +1055,8 @@ def create_suggestion_item(p: dict, cat: str, cand: dict, eid: str) -> dict:
 
 
 def delete_suggestion_items(eid: str) -> None:
-    with db.get_conn() as c:
-        rows = c.execute("SELECT id, crop_path, cutout_path, white_path FROM items WHERE status='suggestion' "
-                         "AND json_extract(attributes, '$.suggestion_for')=?", (eid,)).fetchall()
+    rows = [it for it in db.list_items(status="suggestion")
+            if (it.get("attributes") or {}).get("suggestion_for") == eid]
     for r in rows:
         db.delete_item(r["id"])
         for k in ("crop_path", "cutout_path", "white_path"):
